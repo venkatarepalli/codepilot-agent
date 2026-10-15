@@ -71,7 +71,7 @@ def test_run_connects_components_and_stops_cleanly(monkeypatch, capsys):
     assert runner.run(settings=settings, stop_event=stop) == 0
     orchestrator.invoke.assert_not_called()
     polling.run_forever.assert_called_once()
-    assert "issue triage started" in capsys.readouterr().out
+    assert "CodePilot coding loop started" in capsys.readouterr().out
 
 
 def test_analysis_callback_releases_issue_after_success(monkeypatch):
@@ -83,6 +83,7 @@ def test_analysis_callback_releases_issue_after_success(monkeypatch):
     polling = MagicMock()
     monkeypatch.setattr(runner, "GitHubClient", lambda _settings: client)
     monkeypatch.setattr(runner, "create_orchestrator", lambda **kwargs: orchestrator)
+    monkeypatch.setattr(runner, "_clone_repository", lambda *_args: None)
 
     def capture_callback(callback, _stop_event):
         callback(GitHubIssue(number=7, title="Investigate issue"))
@@ -92,7 +93,7 @@ def test_analysis_callback_releases_issue_after_success(monkeypatch):
 
     runner.run(settings=settings, stop_event=Event())
 
-    orchestrator.invoke.assert_called_once()
+    orchestrator.run_coding_task.assert_called_once()
     polling.release_issue.assert_called_once_with(7)
 
 
@@ -105,6 +106,7 @@ def test_analysis_callback_releases_issue_when_agent_fails(monkeypatch):
     polling = MagicMock()
     monkeypatch.setattr(runner, "GitHubClient", lambda _settings: client)
     monkeypatch.setattr(runner, "create_orchestrator", lambda **kwargs: orchestrator)
+    monkeypatch.setattr(runner, "_clone_repository", lambda *_args: None)
 
     def capture_callback(callback, _stop_event):
         try:
