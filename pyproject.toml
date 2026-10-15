@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codepilot-agent"
+version = "0.1.0"
+description = "Multi-agent coding platform for the Codebasics AI Engineering capstone"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "deepagents>=0.7,<0.8",
+    "langchain-community>=0.4,<0.5",
+    "langchain-openai>=1.7,<2",
+    "PyGithub>=2.6,<3",
+    "chromadb>=1.0,<2",
+    "python-dotenv>=1.0,<2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
+    "pytest-cov>=5,<7",
+    "ruff>=0.8,<1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+markers = [
+    "unit: fast isolated tests",
+    "integration: tests involving multiple components or external services",
+    "e2e: complete end-to-end workflow tests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

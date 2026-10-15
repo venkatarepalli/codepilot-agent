@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.secret
+*.pem
+*.key
+*credentials*
+
+# Local backup modules
+src/codepilot/old-*.py
+src/codepilot/agents/old-*.py
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local CodePilot state
+.codepilot/
+working/
+sandbox/
+
+# Databases / vector stores
+*.db
+*.sqlite
+*.sqlite3
+chroma_data/
+
+# Logs / generated output
+logs/
+*.log
+*.tmp
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Coverage / test artifacts
+.coverage.*
+coverage.xml
+
+# Local documentation artifacts
+*.mp4
+*.mov
+*.webm
