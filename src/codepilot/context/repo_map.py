@@ -223,6 +223,33 @@ def _git_revision(root: Path) -> str | None:
         return None
     return result.stdout.strip() or None
 
+def _git_changed_files(root: Path) -> set[str] | None:
+    """Return changed tracked paths relative to HEAD, or None if unavailable."""
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "diff",
+                "--name-only",
+                "HEAD",
+                "--",
+            ],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    return {
+        Path(line).as_posix()
+        for line in result.stdout.splitlines()
+        if line.strip()
+    }
+
 
 def _fit_token_budget(repo_map: RepoMap, token_budget: int) -> RepoMap:
     """Trim file summaries until the rendered map fits its token budget."""
@@ -299,6 +326,7 @@ class RepoMapCache:
         excluded_paths = (self._cache_directory,) if _is_within(self._cache_directory, root) else ()
         fingerprint = _map_fingerprint(root, excluded_paths)
         revision = _git_revision(root)
+        changed_files = _git_changed_files(root)
 
         if self._cache_file.is_file():
             try:
@@ -308,6 +336,7 @@ class RepoMapCache:
                     and cached.get("fingerprint") == fingerprint
                     and cached.get("git_revision") == revision
                     and cached.get("token_budget") == token_budget
+                    and changed_files == set()
                 ):
                     cached_map = cached["map"]
                     return RepoMap(

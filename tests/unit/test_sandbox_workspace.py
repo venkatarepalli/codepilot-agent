@@ -65,15 +65,46 @@ def test_excludes_git_metadata_and_secrets(workspace) -> None:
     assert not (workspace.path / "credentials.json").exists()
 
 
-def test_rejects_duplicate_workspace(
+def test_repeated_issue_gets_isolated_workspace_without_overwriting_previous(
     manager: WorkspaceManager,
     repository: Path,
 ) -> None:
-    """An existing issue workspace must not be overwritten."""
-    manager.create_workspace(repository, 123)
+    """Retrying an issue preserves its old workspace and creates a fresh copy."""
+    first = manager.create_workspace(repository, 123)
+    manager.write_file(first, "app.py", "first attempt's working change\n")
 
-    with pytest.raises(FileExistsError):
-        manager.create_workspace(repository, 123)
+    second = manager.create_workspace(repository, 123)
+
+    assert first.path != second.path
+    assert first.path.name == "issue-123"
+    assert second.path.name.startswith("issue-123-run-")
+    assert manager.read_file(first, "app.py") == "first attempt's working change\n"
+    assert manager.read_file(second, "app.py") == "print('hello')\n"
+    assert manager.get_changes(first)["modified"] == ["app.py"]
+    assert manager.get_changes(second) == {"added": [], "modified": [], "deleted": []}
+
+    manager.cleanup(second)
+    assert not second.path.exists()
+    assert first.path.is_dir()
+
+
+def test_rejects_workspace_metadata_with_invalid_retry_suffix(
+    manager: WorkspaceManager,
+    repository: Path,
+) -> None:
+    """Retry workspace names must use the expected issue prefix and UUID form."""
+    from codepilot.sandbox.workspace import WorkspaceInfo
+
+    retry_path = manager.workspace_root / "issue-123-run-not-a-uuid"
+    retry_path.mkdir()
+    forged = WorkspaceInfo(
+        issue_number=123,
+        path=retry_path,
+        source_repository=repository,
+    )
+
+    with pytest.raises(ValueError, match="does not match its path"):
+        manager.read_file(forged, "app.py")
 
 
 def test_rejects_invalid_issue_number(

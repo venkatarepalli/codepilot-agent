@@ -182,3 +182,79 @@ def test_cache_directory_nested_in_repository_is_excluded(
     repo_map = cache.get_or_build(tmp_path)
     assert [item.path for item in repo_map.files] == ["app.py"]
     assert "artifacts/" not in repo_map.directory_tree
+
+def test_cache_invalidates_after_git_tracked_file_changes(
+    tmp_path: Path,
+) -> None:
+    """Repo Map is rebuilt after a tracked file changes in Git."""
+    import subprocess
+
+    def run_git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    run_git("init")
+    run_git("config", "user.email", "codepilot-test@example.com")
+    run_git("config", "user.name", "CodePilot Test")
+
+    source = tmp_path / "app.py"
+    source.write_text('"""Initial module."""\n', encoding="utf-8")
+
+    run_git("add", "app.py")
+    run_git("commit", "-m", "Initial repository")
+
+    cache = RepoMapCache(tmp_path / "cache")
+    first = cache.get_or_build(tmp_path)
+
+    source.write_text(
+        '"""Updated module."""\ndef new_function():\n    return True\n',
+        encoding="utf-8",
+    )
+
+    second = cache.get_or_build(tmp_path)
+
+    assert first != second
+    assert "new_function" in second.files[0].summary
+
+def test_cache_rebuilds_when_tracked_file_has_uncommitted_changes(
+    tmp_path: Path,
+) -> None:
+    """Uncommitted Git changes invalidate a cached Repo Map."""
+    import subprocess
+
+    def run_git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    run_git("init")
+    run_git("config", "user.email", "codepilot-test@example.com")
+    run_git("config", "user.name", "CodePilot Test")
+
+    source = tmp_path / "app.py"
+    source.write_text('"""Initial module."""\n', encoding="utf-8")
+
+    run_git("add", "app.py")
+    run_git("commit", "-m", "Initial repository")
+
+    cache = RepoMapCache(tmp_path / "cache")
+    first = cache.get_or_build(tmp_path)
+
+    source.write_text(
+        '"""Updated module."""\ndef changed_function():\n    return True\n',
+        encoding="utf-8",
+    )
+
+    second = cache.get_or_build(tmp_path)
+
+    assert first != second
+    assert "changed_function" in second.files[0].summary

@@ -101,6 +101,36 @@ def test_poll_once_uses_github_client(
     service._client.get_open_issues.assert_called_once_with()
 
 
+def test_poll_once_publishes_full_issue_snapshot_and_claimed_numbers(
+    settings: Settings,
+    issue: GitHubIssue,
+) -> None:
+    client = MagicMock()
+    client.get_open_issues.return_value = [issue]
+    observer = MagicMock()
+    service = GitHubPollingService(client, settings, on_issues=observer)
+
+    assert service.poll_once() == [issue]
+
+    observer.assert_called_once_with((issue,), frozenset({issue.number}))
+
+
+def test_releasing_issue_refreshes_observer_snapshot(
+    settings: Settings,
+    issue: GitHubIssue,
+) -> None:
+    client = MagicMock()
+    client.get_open_issues.return_value = [issue]
+    observer = MagicMock()
+    service = GitHubPollingService(client, settings, on_issues=observer)
+
+    service.poll_once()
+    service.release_issue(issue.number)
+
+    assert observer.call_count == 2
+    assert observer.call_args.args == ((issue,), frozenset())
+
+
 def test_run_forever_stops_when_stop_event_is_set(
     service: GitHubPollingService,
 ) -> None:

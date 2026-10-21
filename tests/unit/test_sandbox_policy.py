@@ -18,6 +18,28 @@ def sandbox(tmp_path: Path) -> tuple[SandboxPolicy, Path]:
 
 
 @pytest.mark.parametrize(
+    "command",
+    [
+        ["git", "push", "origin", "main"],
+        ["git", "-C", "repo", "push", "origin", "main"],
+        ["git", "--git-dir=.git", "push", "origin", "main"],
+        ["git", "-c", "credential.helper=store", "push", "origin", "main"],
+        [r"C:\Program Files\Git\cmd\git.exe", "push", "origin", "main"],
+    ],
+)
+def test_requires_approval_for_git_push_with_global_options(
+    sandbox: tuple[SandboxPolicy, Path],
+    command: list[str],
+) -> None:
+    """Git global options must not bypass the push approval gate."""
+    policy, root = sandbox
+
+    result = policy.check_command(command, working_directory=root)
+
+    assert result.decision == SecurityDecision.REQUIRES_APPROVAL
+
+
+@pytest.mark.parametrize(
     "filename",
     [
         ".env.local",

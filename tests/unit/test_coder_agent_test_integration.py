@@ -69,6 +69,7 @@ def coder_agent(workspace_manager: Mock, test_agent: Mock) -> CoderAgent:
         implementer=Mock(),
         test_command=("pytest", "-q"),
         test_agent=test_agent,
+        approval_callback=lambda _operation, _details: True,
     )
 
 
@@ -201,6 +202,103 @@ def test_three_failed_test_attempts_stop_the_coding_workflow(
     assert result.attempts == 3
     assert test_agent.run.call_count == 3
     assert "3 implementation attempts" in result.error
+
+
+def test_retry_after_two_failed_test_runs_requires_human_approval(
+    workspace_manager: Mock,
+    test_agent: Mock,
+    issue: GitHubIssue,
+    workspace_info: WorkspaceInfo,
+) -> None:
+    """The third implementation attempt is gated by explicit human approval."""
+    approval_calls = []
+
+    def approve(operation, details):
+        approval_calls.append((operation, details))
+        return True
+
+    test_agent.run.side_effect = [
+        make_test_result(TestStatus.FAILED, attempt=1, command_result=failed_command_result()),
+        make_test_result(TestStatus.FAILED, attempt=2, command_result=failed_command_result()),
+        make_test_result(TestStatus.PASSED, attempt=3, command_result=successful_command_result()),
+    ]
+    agent = CoderAgent(
+        workspace_manager,
+        planner=lambda issue, workspace: "Plan",
+        implementer=Mock(),
+        test_command=("pytest", "-q"),
+        test_agent=test_agent,
+        approval_callback=approve,
+    )
+
+    result = agent.run(issue, workspace_info.source_repository)
+
+    assert result.status == CoderStatus.SUCCEEDED
+    assert result.attempts == 3
+    assert len(approval_calls) == 1
+    operation, details = approval_calls[0]
+    assert operation == "retry_after_two_failed_test_runs"
+    assert details["issue_number"] == issue.number
+    assert details["failed_test_runs"] == 2
+    assert details["next_attempt"] == 3
+    assert test_agent.run.call_count == 3
+
+
+def test_denied_retry_approval_stops_after_two_failed_test_runs(
+    workspace_manager: Mock,
+    test_agent: Mock,
+    issue: GitHubIssue,
+    workspace_info: WorkspaceInfo,
+) -> None:
+    """Denied or unavailable approval must fail closed without a third run."""
+    test_agent.run.side_effect = [
+        make_test_result(TestStatus.FAILED, attempt=1, command_result=failed_command_result()),
+        make_test_result(TestStatus.FAILED, attempt=2, command_result=failed_command_result()),
+    ]
+    approval = Mock(return_value=False)
+    agent = CoderAgent(
+        workspace_manager,
+        planner=lambda issue, workspace: "Plan",
+        implementer=Mock(),
+        test_command=("pytest", "-q"),
+        test_agent=test_agent,
+        approval_callback=approval,
+    )
+
+    result = agent.run(issue, workspace_info.source_repository)
+
+    assert result.status == CoderStatus.FAILED
+    assert result.attempts == 2
+    assert "Human approval was not granted" in result.error
+    assert test_agent.run.call_count == 2
+    approval.assert_called_once()
+
+
+def test_missing_retry_approval_callback_fails_closed(
+    workspace_manager: Mock,
+    test_agent: Mock,
+    issue: GitHubIssue,
+    workspace_info: WorkspaceInfo,
+) -> None:
+    """An unconfigured approval callback must not silently permit attempt three."""
+    test_agent.run.side_effect = [
+        make_test_result(TestStatus.FAILED, attempt=1, command_result=failed_command_result()),
+        make_test_result(TestStatus.FAILED, attempt=2, command_result=failed_command_result()),
+    ]
+    agent = CoderAgent(
+        workspace_manager,
+        planner=lambda issue, workspace: "Plan",
+        implementer=Mock(),
+        test_command=("pytest", "-q"),
+        test_agent=test_agent,
+    )
+
+    result = agent.run(issue, workspace_info.source_repository)
+
+    assert result.status == CoderStatus.FAILED
+    assert result.attempts == 2
+    assert "Human approval was not granted" in result.error
+    assert test_agent.run.call_count == 2
 
 
 @pytest.mark.parametrize(

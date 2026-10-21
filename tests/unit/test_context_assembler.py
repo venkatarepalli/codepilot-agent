@@ -98,6 +98,57 @@ def test_semantic_failure_falls_back_to_keyword_results():
     assert package.files
     assert any(item.source.startswith("keyword") for item in package.files)
 
+def test_keyword_strategy_does_not_call_semantic_retriever():
+    semantic = FakeSemanticRetriever(
+        [FakeResult(FileSummary("src/semantic.py", "Python", "Semantic result."))]
+    )
+    assembler = ContextAssembler(
+        token_budget=1000,
+        semantic_retriever=semantic,
+        retrieval_strategy="keyword",
+    )
+
+    package = assembler.assemble(make_repo_map(), "GitHub issue polling")
+
+    assert any(item.source == "keyword" for item in package.files)
+    assert not any(item.path == "src/semantic.py" for item in package.files)
+
+
+def test_semantic_strategy_uses_semantic_results_only():
+    semantic = FakeSemanticRetriever(
+        [FakeResult(FileSummary("src/semantic.py", "Python", "Semantic result."))]
+    )
+    assembler = ContextAssembler(
+        token_budget=1000,
+        semantic_retriever=semantic,
+        retrieval_strategy="semantic",
+    )
+
+    package = assembler.assemble(make_repo_map(), "unrelated query")
+
+    assert any(item.path == "src/semantic.py" for item in package.files)
+    assert all("keyword" not in item.source for item in package.files)
+
+
+def test_hybrid_strategy_merges_keyword_and_semantic_results():
+    semantic = FakeSemanticRetriever(
+        [FakeResult(FileSummary("src/semantic.py", "Python", "Semantic result."))]
+    )
+    assembler = ContextAssembler(
+        token_budget=1000,
+        semantic_retriever=semantic,
+        retrieval_strategy="hybrid",
+    )
+
+    package = assembler.assemble(make_repo_map(), "GitHub issue polling")
+
+    assert any("keyword" in item.source for item in package.files)
+    assert any(item.path == "src/semantic.py" for item in package.files)
+
+
+def test_rejects_unknown_retrieval_strategy():
+    with pytest.raises(ValueError, match="retrieval_strategy"):
+        ContextAssembler(retrieval_strategy="unknown")
 
 def test_context_budget_truncates_additional_summaries():
     package = ContextAssembler(token_budget=30).assemble(make_repo_map(), "GitHub issue polling")

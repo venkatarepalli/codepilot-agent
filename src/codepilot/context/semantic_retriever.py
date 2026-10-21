@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -58,6 +60,49 @@ def _embedding_document(file_summary: FileSummary) -> str:
         f"Summary: {file_summary.summary}"
     )
 
+DEFAULT_CHUNK_SIZE = 1200
+DEFAULT_CHUNK_OVERLAP = 200
+
+SOURCE_EXTENSIONS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx",
+    ".java", ".sql", ".html", ".css",
+    ".json", ".yaml", ".yml", ".toml",
+    ".sh", ".ps1",
+}
+
+
+def _chunk_text(
+    content: str,
+    *,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    overlap: int = DEFAULT_CHUNK_OVERLAP,
+) -> list[str]:
+    """Split text into bounded, overlapping character chunks."""
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be at least 1.")
+    if overlap < 0 or overlap >= chunk_size:
+        raise ValueError("overlap must be non-negative and smaller than chunk_size.")
+
+    text = content.strip()
+    if not text:
+        return []
+
+    chunks = []
+    start = 0
+
+    while start < len(text):
+        end = min(start + chunk_size, len(text))
+        chunk = text[start:end].strip()
+
+        if chunk:
+            chunks.append(chunk)
+
+        if end == len(text):
+            break
+
+        start = end - overlap
+
+    return chunks
 
 class SemanticFileRetriever:
     """Index Repo Map summaries in a persistent ChromaDB collection.
@@ -139,6 +184,125 @@ class SemanticFileRetriever:
         )
         return len(safe_files)
 
+    def index_source_files(
+        self,
+        repository_root: str | Path,
+        repo_map: RepoMap,
+    ) -> int:
+        """Index safe source-file chunks in the persistent vector collection."""
+        root = Path(repository_root).resolve()
+        if not root.is_dir():
+            raise NotADirectoryError(
+                f"Repository path is not a directory: {root}"
+            )
+
+        # Discover source files independently of the token-budgeted Repo Map.
+        # The Repo Map supplies summaries; it does not limit source indexing.
+        map_paths = {
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+            and _is_safe_path(path.relative_to(root).as_posix())
+            and path.suffix.lower() in SOURCE_EXTENSIONS
+        }
+
+        ids: list[str] = []
+        documents: list[str] = []
+        metadatas: list[dict[str, Any]] = []
+        unreadable_paths: set[str] = set()
+
+        for relative_path in sorted(map_paths):
+            source_path = (root / relative_path).resolve()
+
+            # Prevent paths in the map from escaping the repository.
+            if not source_path.is_relative_to(root):
+                continue
+
+            if source_path.suffix.lower() not in SOURCE_EXTENSIONS:
+                continue
+
+            try:
+                content = source_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                unreadable_paths.add(relative_path)
+                continue
+
+            file_summary = next(
+                (
+                    item
+                    for item in repo_map.files
+                    if item.path == relative_path
+                ),
+                None,
+            )
+            language = file_summary.language if file_summary else "Other"
+            summary = file_summary.summary if file_summary else ""
+
+            for chunk_index, chunk in enumerate(_chunk_text(content)):
+                chunk_id = hashlib.sha256(
+                    f"{root}:{relative_path}:{chunk_index}".encode("utf-8")
+                ).hexdigest()
+
+                ids.append(chunk_id)
+
+                documents.append(
+                    f"Path: {relative_path}\n"
+                    f"Language: {language}\n"
+                    f"Summary: {summary}\n"
+                    f"Chunk {chunk_index + 1}:\n{chunk}"
+                )
+
+                metadatas.append(
+                    {
+                        "path": relative_path,
+                        "language": language,
+                        "summary": summary,
+                        "chunk_index": chunk_index,
+                        "repository": str(root),
+                        "document_type": "source_chunk",
+                    }
+                )
+
+        # Remove obsolete source chunks without touching Repo Map summaries.
+        existing = self._collection.get(
+            where={"document_type": "source_chunk"},
+            include=["metadatas"],
+        )
+
+        existing_ids = existing.get("ids", [])
+        existing_metadatas = existing.get("metadatas", [])
+
+        desired_ids = set(ids)
+        stale_ids = []
+
+        for existing_id, metadata in zip(
+            existing_ids,
+            existing_metadatas,
+            strict=False,
+        ):
+            if not metadata or metadata.get("repository") != str(root):
+                continue
+
+            if (
+                existing_id not in desired_ids
+                and metadata.get("path") not in unreadable_paths
+            ):
+                stale_ids.append(existing_id)
+
+        if stale_ids:
+            self._collection.delete(ids=stale_ids)
+
+        if not ids:
+            return 0
+
+        self._collection.upsert(
+            ids=ids,
+            documents=documents,
+            metadatas=metadatas,
+        )
+        return len(ids)
+
+
     def retrieve(
         self,
         query: str,
@@ -162,6 +326,7 @@ class SemanticFileRetriever:
         distances_by_query = response.get("distances") or [[]]
 
         results: list[SemanticRetrievalResult] = []
+        seen_paths: set[str] = set()
         ids = ids_by_query[0] if ids_by_query else []
         metadatas = metadata_by_query[0] if metadata_by_query else []
         distances = distances_by_query[0] if distances_by_query else []
@@ -173,6 +338,11 @@ class SemanticFileRetriever:
             path = str(metadata.get("path", item_id))
             if not _is_safe_path(path):
                 continue
+
+            if path in seen_paths:
+                continue
+
+            seen_paths.add(path)
             try:
                 file_summary = FileSummary(
                     path=path,

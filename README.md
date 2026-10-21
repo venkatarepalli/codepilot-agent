@@ -4,7 +4,7 @@
 
 **Capstone:** Assignment 01 — Multi-Agent Coding Platform (CodePilot)
 **Repository:** `codepilot-agent`
-**Status:** 🚧 In active development
+**Status:** Capstone implementation in progress; see the requirement matrix for verified component coverage.
 
 ---
 
@@ -40,12 +40,12 @@
 
 CodePilot is a terminal-based multi-agent coding platform designed to work like a skilled junior software engineer. It can poll GitHub for suitable issues, classify and plan work, explore the repository, implement changes in a sandbox, run tests, and prepare a pull request while enforcing safety controls and human approval gates.
 
-> **Documentation status:** This README is maintained throughout development. Setup, operational procedures, design decisions, issues, and testing guidance are added when the corresponding functionality is implemented.
+> **Documentation status:** `python -m codepilot.runner` launches the Textual interface; add `--headless` to use the console runner. See the requirement matrix for component-level evidence and known unverified requirements.
 
 ## Core Capabilities
 
 - GitHub issue polling and triage
-- Direct coding tasks through a Textual TUI
+- Direct coding tasks through the Coder Agent workflow
 - DeepAgents-based multi-agent orchestration
 - Repository mapping and context engineering
 - Keyword and embedding-based relevant-file retrieval
@@ -58,37 +58,41 @@ CodePilot is a terminal-based multi-agent coding platform designed to work like 
 
 ## Architecture
 
-> Architecture diagram will be finalized after the core agent workflow is implemented.
-
 ```text
-Textual TUI
-     |
-     v
-Orchestrator (DeepAgents root agent)
-     |
-     +--> Repo Explorer
-     |
-     +--> Coder --> Test Agent
-     |
-     +--> PR Agent
+Textual TUI <---- thread-safe runtime updates / approval bridge
+    |                                  ^
+    | direct task / skip / shutdown    | issue snapshots / status / logs
+    v                                  |
+CodePilotRuntime ---------------- GitHubPollingService
+    |                                  |
+    v                                  v
+CodePilotOrchestrator <---------- eligible GitHub issues
+    |-- DeepAgents root agent
+    |-- context / Repo Map components
+    |-- CoderAgent -> DeepAgentsCoderAdapter -> CoderWorkspace -> SandboxExecutor
+    |                                             |                  |
+    |                                             v                  v
+    |                                         TestAgent         policy checks
+    |-- PullRequestWorkflow -> TUI/console approval callback -> GitHub API
+    |-- working / episodic / semantic memory components
 ```
 
-See [`docs/architecture.md`](docs/architecture.md) for the detailed architecture once implemented.
+The TUI and runtime communicate through callbacks. Polling and coding work run away from the Textual event loop; approval requests are marshalled back to the UI thread. See [`docs/architecture.md`](docs/architecture.md).
 
 ## Technology Stack
 
 | Layer | Technology | Status |
 |---|---|---|
-| Agent framework | DeepAgents | Planned |
-| Agent runtime | LangGraph via DeepAgents | Planned |
-| GitHub integration | LangChain GitHub Toolkit | Planned |
-| Sandbox | DeepAgents local sandbox backend | Planned |
-| Episodic memory | LangGraph Memory Store | Planned |
-| Semantic memory | ChromaDB | Planned |
-| TUI | Textual | Planned |
-| Guardrails | Custom Python + assignment-required controls | Planned |
+| Agent framework | DeepAgents | Used by orchestrator and coder adapter |
+| Model integration | LangChain Google GenAI / OpenAI | Factory implemented; verify selected provider credentials/model |
+| GitHub integration | PyGithub + project GitHub client | Implemented component; see tests |
+| Sandbox | Custom workspace policy and executor | Implemented component; see tests |
+| Episodic memory | Project-managed task history | Implemented component; see tests |
+| Semantic memory | ChromaDB | Implemented component; requires runtime initialization |
+| TUI | Textual | Default runner entry point; runtime integration and approval bridge implemented, interactive end-to-end verification pending |
+| Guardrails | Custom Python policies and approval callbacks | Implemented in components; see requirement matrix |
 
-> Dependency versions will be pinned only after the environment and compatibility matrix are verified. We will not invent versions prematurely.
+Dependency ranges are declared in `pyproject.toml`. Python 3.11, 3.12, and 3.13 are supported by the declared Python range; Python 3.14 is not supported.
 
 ## Project Structure
 
@@ -124,76 +128,106 @@ codepilot-agent/
 
 ## Prerequisites
 
-> This section will contain verified prerequisites only after the Phase 0 environment check.
-
-Expected prerequisites include:
-
-- Python version compatible with the selected dependency set
+- Windows PowerShell, macOS, or Linux shell
 - Git
-- GitHub account/token with the permissions required by the assignment
-- Access to a supported LLM provider
-- A GitHub repository for testing CodePilot
+- Python **3.11, 3.12, or 3.13** (`pyproject.toml` declares `>=3.11,<3.14`)
+- A supported LLM API key: Google (`LLM_PROVIDER=google`) or OpenAI (`LLM_PROVIDER=openai`)
+- A GitHub personal access token and target repository for issue polling / pull-request operations
+- Network access to install dependencies and reach the configured LLM/GitHub APIs
+
+Use a repository where you have permission to read issues and create branches/pull requests. Start with a disposable test repository rather than a production repository.
 
 ## First-Time Setup
 
-This section is intentionally written as an operational runbook and will be completed as setup is implemented.
+Run these commands from the directory where you want the checkout. Replace the repository URL with your actual GitHub repository URL.
 
 ### 1. Clone the repository
 
-```bash
-git clone <repository-url>
-cd codepilot-agent
+```powershell
+git clone https://github.com/OWNER/codepilot-agent.git
+Set-Location codepilot-agent
 ```
 
-### 2. Create the virtual environment
+If you already have a local checkout, open PowerShell in its root instead.
 
-_To be completed after the supported Python/dependency strategy is verified._
+### 2. Create and activate a virtual environment
 
-### 3. Install dependencies
-
-_To be completed after dependency selection and version pinning._
-
-### 4. Configure environment variables
-
-Copy `.env.example` to `.env` and populate only the required values.
-
-```text
-.env.example  ->  .env
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 ```
 
-**Never commit `.env`.**
+If Python 3.13 is not installed, use `py -3.12` or `py -3.11`. If PowerShell blocks activation, use the environment's interpreter directly (for example, `.\.venv\Scripts\python.exe -m pip install -e .`) or follow your organization's PowerShell execution policy; do not change system-wide policy solely for this project.
 
-### 5. Validate the environment
+### 3. Install the project and development tools
 
-_To be added with the project diagnostic command._
+```powershell
+python -m pip install -e .
+python -m pip install "pytest>=8,<9" "pytest-cov>=5,<7" "ruff>=0.8,<1"
+```
 
-### 6. Initialize CodePilot local state
+### 4. Create the environment file
 
-_To be added when the state/memory initialization workflow is implemented._
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
 
-### 7. Run the startup validation
+For Google, set `LLM_PROVIDER=google`, `LLM_MODEL` to a model available to your account, and `GOOGLE_API_KEY`. For OpenAI, set `LLM_PROVIDER=openai`, `LLM_MODEL` to a model available to your account, and `OPENAI_API_KEY`.
 
-_To be added when the startup validation command is implemented._
+For GitHub issue polling, set `GITHUB_TOKEN`, `GITHUB_REPOSITORY_OWNER`, `GITHUB_REPOSITORY_NAME`, and `GITHUB_DEFAULT_BRANCH` (usually `main` or `master`). The token needs permissions appropriate to reading issues and creating branches/pull requests in the selected repository. Use least privilege. Never paste credentials into source files or commit `.env`.
+
+### 5. Run tests and lint checks before using GitHub integration
+
+```powershell
+python -m pytest -q
+python -m ruff check .
+python -m ruff format --check .
+```
+
+These are local checks and do not require a live GitHub polling run. Fix environment/dependency errors separately from actual test failures.
+
+### 6. Start CodePilot
+
+After configuring the LLM and GitHub values, run:
+
+```powershell
+python -m codepilot.runner
+```
+
+The runner opens the four-panel Textual interface and starts GitHub polling in the background. It may clone the configured repository, invoke the LLM, run tests in a workspace, and ask for approval in the Human Approval panel before protected operations. Use a disposable test repository first. Press `q` to exit.
+
+To use the previous console-only loop instead, run:
+
+```powershell
+python -m codepilot.runner --headless
+```
+
+### Local coding smoke test (uses the configured LLM)
+
+This is a live-model smoke test, not an offline unit test. Configure the LLM provider and API key first:
+
+```powershell
+python scripts/smoke_test_coder.py
+```
+
+It may incur provider usage/costs. Passing this test does not prove that live GitHub issue polling and pull-request publication work end to end.
 
 ## Subsequent Runs
 
-If CodePilot has already been set up successfully, do **not** repeat first-time initialization unless the relevant component has been reset.
+From the project root, activate the existing environment and start the runner:
 
-The final documented procedure will explicitly distinguish:
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m codepilot.runner
+```
 
-- normal second/subsequent run
-- dependency changes
-- configuration changes
-- repository changes requiring Repo Map invalidation
-- interrupted/failed task recovery
-- ChromaDB/state recovery
-- complete clean reset
+After changing dependencies or creating a fresh environment, reinstall the project and test tools using the commands above. Keep `.env` and `.codepilot/` local. `.codepilot/` contains runtime workspace/memory state; deleting it may remove persisted state and workspaces. Inspect and back up needed work before resetting it.
 
 ## Configuration
 
-Configuration will be centralized and documented rather than scattered across source files.
-
-The initial configuration categories are:
+Runtime settings are read from environment variables; the runner loads `.env` from the current working directory. See `.env.example` for the template. Main configuration categories are:
 
 - LLM provider/model
 - GitHub repository
@@ -211,15 +245,19 @@ See [`docs/configuration.md`](docs/configuration.md).
 
 ### GitHub issue mode
 
-_To be documented after issue polling is implemented._
+Run `python -m codepilot.runner` from the project root after configuring `.env`. The Issues panel displays the open issue snapshot, and eligible issues are queued for processing. The Active Task and Agent Logs panels receive runtime status updates. Press `l` to open the full-screen, scrollable log viewer; press `c` to copy all logs or `s` to save a transcript under `.codepilot/logs/`. Use `Esc` to return to the dashboard. Protected operations wait for explicit `approve` or `reject` input in the Human Approval panel. `inspect` logs the pending operation's details without approving it.
 
 ### Direct task mode
 
-_To be documented after the TUI direct-task workflow is implemented._
+Press `i` to open the multi-line task editor. Paste or type the complete task, use `Enter` for new lines, and press `Ctrl+Enter` to submit it. CodePilot clones the configured repository and runs the existing Coder Agent/test workflow in its isolated task workspace. The proposed diff is retained for inspection. Direct tasks do **not** automatically open a pull request because they are not associated with a real GitHub issue; issue-linked PR publication continues through the GitHub issue workflow.
+
+### Skip and stop
+
+Press `s` to skip the oldest queued issue for the current session. It does not forcibly cancel an issue that is already running. Press `q` to request shutdown. Use `python -m codepilot.runner --headless` when an interactive TUI is not desired.
 
 ### Stopping and restarting
 
-_To be documented with the actual runtime/state behavior._
+Press `q` to stop the TUI, or `Ctrl+C` to stop the headless loop. Runtime workspace and memory state is stored under `.codepilot/` by default (the runner's working clone is configured separately). Inspect existing work before deleting local state.
 
 ## Testing
 
@@ -231,20 +269,19 @@ Integration tests  -> external/service/component interactions
 E2E tests          -> complete issue-to-PR workflow
 ```
 
-The final README will document the exact commands, prerequisites, environment requirements, test markers, expected duration, and cleanup/recovery behavior for each test category.
+Run the test suite from the project root with `python -m pytest -q`. For focused tests, use `python -m pytest tests/unit/test_coder_agent_test_integration.py -q`. Test markers are declared in `pyproject.toml`; not every test requires live external services. Run lint and format checks with `python -m ruff check .` and `python -m ruff format --check .`.
 
 See [`docs/testing.md`](docs/testing.md).
 
 ## Troubleshooting & Recovery
 
-Known setup and runtime issues will be documented as they are encountered, including:
+Common recovery checks:
 
-- symptoms
-- root cause
-- investigation
-- resolution
-- verification
-- prevention/workaround
+- Confirm Python with `python --version` and verify the virtual environment is active.
+- Confirm dependencies with `python -m pip install -e .` and reinstall the test tools if needed.
+- Confirm `.env` is in the project root and contains the selected provider key and GitHub repository settings. Never print or share token values while debugging.
+- If approval is denied or unavailable, CodePilot should stop the protected operation; inspect the workspace and test output before rerunning.
+- Preserve `.codepilot/` until you have inspected retained workspace changes.
 
 See [`docs/troubleshooting.md`](docs/troubleshooting.md) and [`docs/engineering-issues/`](docs/engineering-issues/).
 
@@ -252,7 +289,7 @@ See [`docs/troubleshooting.md`](docs/troubleshooting.md) and [`docs/engineering-
 
 CodePilot must prevent unsafe operations in the sandbox and require human approval for defined high-risk actions.
 
-The implemented guardrails and their tests will be documented in [`docs/guardrails.md`](docs/guardrails.md).
+Sandbox policy and execution behavior are implemented in `src/codepilot/sandbox/policy.py` and `src/codepilot/sandbox/executor.py`; focused coverage is in `tests/unit/test_sandbox_policy.py` and `tests/unit/test_sandbox_executor.py`. GitHub write approval is handled by `PullRequestWorkflow`. Retry approval is covered by `tests/unit/test_coder_agent_test_integration.py`.
 
 ## Memory
 
@@ -266,13 +303,13 @@ See [`docs/memory.md`](docs/memory.md).
 
 ## Skills
 
-Reusable Skills will be documented with their purpose, workflow, inputs, forbidden actions, selection rules, and tests.
+Reusable skill definitions and selection logic are in `src/codepilot/skills/skill_registry.py`; see `tests/unit/test_skill_registry.py`.
 
 See [`docs/skills.md`](docs/skills.md).
 
 ## Context Engineering
 
-The Repo Map, token budget, retrieval strategies, file-on-demand loading, virtual filesystem, and summarization behavior will be documented in [`docs/context-engineering.md`](docs/context-engineering.md).
+Repo Map and context assembly components are in `src/codepilot/context/` and `src/codepilot/repo/`; see `tests/unit/test_repo_map.py`, `tests/unit/test_context_assembler.py`, and retriever tests. See [`docs/context-engineering.md`](docs/context-engineering.md) for design notes.
 
 ## Design Decisions
 
@@ -303,7 +340,11 @@ See [`docs/engineering-issues/`](docs/engineering-issues/).
 
 ## Known Limitations
 
-This section will contain verified limitations only. It will be updated as implementation progresses.
+- The TUI logs runtime status and result events, but the underlying agent does not yet stream every model thought or tool call into the Logs panel.
+- Direct tasks produce a sandboxed proposed diff but do not automatically publish a pull request; PR publication currently requires a real GitHub issue.
+- A real-model direct coding task has been verified through the integrated TUI against a disposable GitHub repository; the full live GitHub issue-to-pull-request workflow remains unverified.
+- Agent Logs forwards CodePilot and selected dependency log records while the TUI is active. Streaming every internal model thought/tool call remains outside the current implementation.
+- The model factory implements Google and OpenAI providers; each provider/model combination must be tested with its own credentials before claiming runtime compatibility.
 
 ## Demo
 
@@ -313,7 +354,7 @@ The final submission will include a 5–7 minute demo covering the required Code
 
 ## Assignment Requirement Mapping
 
-A living requirement-to-implementation-to-test-to-demo matrix will be maintained during development.
+The requirement matrix in [`docs/requirement-matrix.md`](docs/requirement-matrix.md) records source paths and test references. Component-level implementation does not by itself prove full end-to-end assignment compliance.
 
 See [`docs/requirement-matrix.md`](docs/requirement-matrix.md).
 

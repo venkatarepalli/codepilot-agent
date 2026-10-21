@@ -74,6 +74,7 @@ def make_agent(
             "-c",
             test_code,
         ],
+        approval_callback=lambda _operation, _details: True,
     )
 
 
@@ -234,6 +235,7 @@ def test_empty_change_set_retries_implementation(
     coder_workspace: CoderWorkspace,
     repository: Path,
     issue: GitHubIssue,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """An empty change set triggers a retry with explicit feedback."""
     attempts = []
@@ -280,6 +282,8 @@ def test_empty_change_set_retries_implementation(
 
     # The original repository must remain unchanged.
     assert (repository / "app.py").read_text(encoding="utf-8") == "answer = 1\n"
+    # Retry diagnostics use logging so they do not write over an active TUI.
+    assert capsys.readouterr().out == ""
 
 
 def test_empty_plan_is_rejected(

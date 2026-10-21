@@ -115,15 +115,23 @@ class ContextAssembler:
         semantic_retriever: Any | None = None,
         keyword_top_k: int = 10,
         semantic_top_k: int = 10,
+        retrieval_strategy: str = "hybrid",
     ) -> None:
         if token_budget < 1:
             raise ValueError("token_budget must be at least 1")
         if keyword_top_k < 1 or semantic_top_k < 1:
             raise ValueError("retrieval top_k values must be at least 1")
+        if retrieval_strategy not in {"keyword", "semantic", "hybrid"}:
+            raise ValueError(
+                "retrieval_strategy must be 'keyword', 'semantic', or 'hybrid'"
+            )
+
         self.token_budget = token_budget
         self.semantic_retriever = semantic_retriever
         self.keyword_top_k = keyword_top_k
         self.semantic_top_k = semantic_top_k
+        self.retrieval_strategy = retrieval_strategy
+
 
     def assemble(
         self,
@@ -137,38 +145,47 @@ class ContextAssembler:
         selected: dict[str, ContextFile] = {}
         truncated = repo_map_cost > self.token_budget
 
-        keyword_results = retrieve_relevant_files(
-            repo_map,
-            issue_title,
-            issue_description,
-            top_k=self.keyword_top_k,
-        )
-        for result in keyword_results:
-            path, summary, score, distance = _summary_from_result(result)
-            if _safe_path(path):
-                self._merge(selected, ContextFile(path, summary, "keyword", score, distance))
-
-        semantic_results: Iterable[Any] = ()
-        if self.semantic_retriever is not None:
-            try:
-                semantic_results = self.semantic_retriever.retrieve(
-                    repo_map,
-                    issue_title,
-                    issue_description,
-                    top_k=self.semantic_top_k,
-                )
-            except Exception:
-                # Retrieval failure must not stop a coding task; keyword search is
-                # the deterministic fallback. The integration layer should log it.
-                semantic_results = ()
-
-        for result in semantic_results:
-            try:
+        if self.retrieval_strategy in {"keyword", "hybrid"}:
+            keyword_results = retrieve_relevant_files(
+                repo_map,
+                issue_title,
+                issue_description,
+                top_k=self.keyword_top_k,
+            )
+            for result in keyword_results:
                 path, summary, score, distance = _summary_from_result(result)
-            except (TypeError, AttributeError, ValueError):
-                continue
-            if _safe_path(path):
-                self._merge(selected, ContextFile(path, summary, "semantic", score, distance))
+                if _safe_path(path):
+                    self._merge(
+                        selected,
+                        ContextFile(path, summary, "keyword", score, distance),
+                    )
+
+        if self.retrieval_strategy in {"semantic", "hybrid"}:
+            semantic_results: Iterable[Any] = ()
+
+            if self.semantic_retriever is not None:
+                try:
+                    semantic_results = self.semantic_retriever.retrieve(
+                        repo_map,
+                        issue_title,
+                        issue_description,
+                        top_k=self.semantic_top_k,
+                    )
+                except Exception:
+                    # Preserve the existing resilience when semantic search fails.
+                    semantic_results = ()
+
+            for result in semantic_results:
+                try:
+                    path, summary, score, distance = _summary_from_result(result)
+                except (TypeError, AttributeError, ValueError):
+                    continue
+
+                if _safe_path(path):
+                    self._merge(
+                        selected,
+                        ContextFile(path, summary, "semantic", score, distance),
+                    )
 
         # Keyword score and semantic distance are not directly comparable. Keep
         # keyword-first order, then semantic-only files in their retrieval order.

@@ -1,4 +1,5 @@
 """Regression tests for graceful polling shutdown."""
+
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock

@@ -1,17 +1,22 @@
 """Coder Agent: plan, implement, test, retry, and prepare a proposed diff."""
 
 import difflib
-from collections.abc import Callable, Sequence
+import logging
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from codepilot.agents.coder_models import CoderResult, CoderStatus
 from codepilot.agents.test_agent import TestAgent
 from codepilot.agents.test_models import TestResult, TestStatus
 from codepilot.github.models import GitHubIssue
+from codepilot.graph.lifecycle import TaskStatus
 from codepilot.sandbox.coder_workspace import CoderWorkspace
 from codepilot.sandbox.execution_models import CommandExecutionResult
 from codepilot.sandbox.workspace import WorkspaceInfo
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +31,9 @@ class ImplementationFeedback:
 
 
 Planner = Callable[[GitHubIssue, WorkspaceInfo], str]
+ApprovalCallback = Callable[[str, Mapping[str, Any]], bool]
+
+
 Implementer = Callable[
     [
         GitHubIssue,
@@ -54,6 +62,8 @@ class CoderAgent:
         implementer: Implementer,
         test_command: Sequence[str],
         test_agent: TestAgent | None = None,
+        approval_callback: ApprovalCallback | None = None,
+        lifecycle_callback: Callable[[TaskStatus], None] | None = None,
     ) -> None:
         """Initialize the Coder Agent with explicit or default Test Agent."""
         if not test_command:
@@ -64,8 +74,15 @@ class CoderAgent:
         self.workspace = workspace
         self.planner = planner
         self.implementer = implementer
+        self.lifecycle_callback = lifecycle_callback
         self.test_command = tuple(test_command)
         self.test_agent = test_agent if test_agent is not None else TestAgent(workspace)
+        self.approval_callback = approval_callback
+
+    def _report_lifecycle(self, status: TaskStatus) -> None:
+        """Report a lifecycle event when a callback is configured."""
+        if self.lifecycle_callback is not None:
+            self.lifecycle_callback(status)
 
     def run(
         self,
@@ -98,6 +115,7 @@ class CoderAgent:
 
         for attempt in range(1, self.MAX_ATTEMPTS + 1):
             try:
+                self._report_lifecycle(TaskStatus.IMPLEMENTING)
                 self.implementer(
                     issue,
                     task_workspace,
@@ -127,10 +145,10 @@ class CoderAgent:
                             "proposing actual file changes."
                         )
                     )
-                    print(
-                        f"[CodePilot] Attempt {attempt} produced no file changes. "
-                        "Retrying implementation with explicit feedback.",
-                        flush=True,
+                    logger.info(
+                        "Attempt %s produced no file changes; retrying implementation "
+                        "with explicit feedback.",
+                        attempt,
                     )
                     continue
 
@@ -157,6 +175,7 @@ class CoderAgent:
                 )
 
             try:
+                self._report_lifecycle(TaskStatus.TESTING)
                 assessment = self.test_agent.run(
                     issue_number=issue.number,
                     attempt=attempt,
@@ -202,6 +221,50 @@ class CoderAgent:
                     test_assessment=assessment,
                     diff_path=diff_path,
                 )
+
+            if assessment.status == TestStatus.FAILED and attempt == 2:
+                approval_details = {
+                    "issue_number": issue.number,
+                    "failed_test_runs": 2,
+                    "next_attempt": attempt + 1,
+                    "test_summary": assessment.summary or assessment.error or "Tests failed.",
+                    "workspace": str(task_workspace.path),
+                }
+                approved = False
+                if self.approval_callback is not None:
+                    try:
+                        approved = (
+                            self.approval_callback(
+                                "retry_after_two_failed_test_runs", approval_details
+                            )
+                            is True
+                        )
+                    except Exception as exc:
+                        return self._failure(
+                            issue,
+                            task_workspace,
+                            error=(
+                                "Human approval callback failed; retry was stopped: "
+                                f"{type(exc).__name__}: {exc}"
+                            ),
+                            plan=plan,
+                            attempts=attempt,
+                            test_result=command_result,
+                            test_assessment=assessment,
+                        )
+                if not approved:
+                    return self._failure(
+                        issue,
+                        task_workspace,
+                        error=(
+                            "Human approval was not granted for retrying after two "
+                            "failed test runs. The workspace has been retained for inspection."
+                        ),
+                        plan=plan,
+                        attempts=attempt,
+                        test_result=command_result,
+                        test_assessment=assessment,
+                    )
 
             if assessment.status != TestStatus.FAILED:
                 details = assessment.error or assessment.summary or assessment.status.value

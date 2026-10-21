@@ -133,6 +133,31 @@ def test_publish_creates_branch_commit_and_pull_request(
     assert "publish_branch" in approval_operations
     assert "create_pull_request_against_protected_branch" in approval_operations
 
+    for approval_call in approvals.call_args_list:
+        details = approval_call.args[1]
+        assert details["changed_files"] == ["src/login.py"]
+        assert details["files_changed"] == len(details["changed_files"])
+
+
+def test_approval_details_list_every_file_in_the_publication_payload(
+    workflow: PullRequestWorkflow,
+    approvals: MagicMock,
+    publish_arguments: dict,
+) -> None:
+    """Approval details must identify the exact files being published."""
+    publish_arguments["changes"] = {
+        "tests/test_login.py": "def test_login():\n    assert True\n",
+        "src/login.py": "def login():\n    return True\n",
+    }
+
+    workflow.publish(**publish_arguments)
+
+    for approval_call in approvals.call_args_list:
+        details = approval_call.args[1]
+        assert details["changed_files"] == ["src/login.py", "tests/test_login.py"]
+        assert details["files_changed"] == 2
+        assert details["files_changed"] == len(details["changed_files"])
+
 
 def test_publish_includes_summary_tests_and_issue_link(
     workflow: PullRequestWorkflow,
@@ -157,13 +182,37 @@ def test_publish_requires_approval_before_branch_creation(
     approvals: MagicMock,
     publish_arguments: dict,
 ) -> None:
-    """Do not publish a branch when human approval is denied."""
+    """Do not create remote Git objects when human approval is denied."""
     approvals.return_value = False
 
     with pytest.raises(PullRequestWorkflowError, match="publish_branch"):
         workflow.publish(**publish_arguments)
 
-    github_client.repository.create_git_ref.assert_not_called()
+    repository = github_client.repository
+    repository.create_git_blob.assert_not_called()
+    repository.create_git_tree.assert_not_called()
+    repository.create_git_commit.assert_not_called()
+    repository.create_git_ref.assert_not_called()
+    github_client.create_pull_request.assert_not_called()
+
+
+def test_publish_stops_when_approval_callback_raises(
+    workflow: PullRequestWorkflow,
+    github_client: MagicMock,
+    approvals: MagicMock,
+    publish_arguments: dict,
+) -> None:
+    """An unavailable approval UI fails closed before any GitHub object is written."""
+    approvals.side_effect = RuntimeError("approval UI unavailable")
+
+    with pytest.raises(PullRequestWorkflowError, match="Approval callback failed"):
+        workflow.publish(**publish_arguments)
+
+    repository = github_client.repository
+    repository.create_git_blob.assert_not_called()
+    repository.create_git_tree.assert_not_called()
+    repository.create_git_commit.assert_not_called()
+    repository.create_git_ref.assert_not_called()
     github_client.create_pull_request.assert_not_called()
 
 
@@ -201,8 +250,12 @@ def test_publish_stops_when_large_change_approval_is_denied(
     ):
         workflow.publish(**publish_arguments)
 
-    github_client.repository.create_git_blob.assert_not_called()
-    github_client.repository.create_git_ref.assert_not_called()
+    repository = github_client.repository
+    repository.create_git_blob.assert_not_called()
+    repository.create_git_tree.assert_not_called()
+    repository.create_git_commit.assert_not_called()
+    repository.create_git_ref.assert_not_called()
+    github_client.create_pull_request.assert_not_called()
 
 
 def test_publish_requires_approval_for_master_branch(
@@ -241,8 +294,12 @@ def test_publish_stops_when_protected_branch_approval_is_denied(
     ):
         workflow.publish(**publish_arguments)
 
-    # Approval is requested before the first remote write, so no orphan branch remains.
-    github_client.repository.create_git_ref.assert_not_called()
+    # Approval is requested before any remote Git object is created.
+    repository = github_client.repository
+    repository.create_git_blob.assert_not_called()
+    repository.create_git_tree.assert_not_called()
+    repository.create_git_commit.assert_not_called()
+    repository.create_git_ref.assert_not_called()
     github_client.create_pull_request.assert_not_called()
 
 
@@ -308,3 +365,97 @@ def test_publish_wraps_github_api_failures(
         workflow.publish(**publish_arguments)
 
     github_client.create_pull_request.assert_not_called()
+
+
+def test_publish_reports_no_metadata_warnings_on_success(
+    workflow: PullRequestWorkflow,
+    publish_arguments: dict,
+) -> None:
+    """A fully configured PR should have no metadata warnings."""
+    result = workflow.publish(**publish_arguments)
+
+    assert result.metadata_warnings == ()
+
+
+def test_publish_reports_label_failure_without_failing_pr_creation(
+    workflow: PullRequestWorkflow,
+    github_client: MagicMock,
+    publish_arguments: dict,
+) -> None:
+    """Label failure must be visible without losing the created PR."""
+    github_client.create_pull_request.side_effect = None
+    pull_request = github_client.create_pull_request.return_value
+    pull_request.number = 42
+    pull_request.html_url = "https://github.com/example-owner/example-repo/pull/42"
+    pull_request.metadata_warnings = ("Failed to apply required labels.",)
+
+    def create_pull_request_with_warning(**kwargs):
+        kwargs["warning_collector"].append("Failed to apply required labels.")
+        return pull_request
+
+    github_client.create_pull_request.side_effect = create_pull_request_with_warning
+
+    result = workflow.publish(**publish_arguments)
+
+    assert result.pull_number == 42
+    assert result.metadata_warnings == ("Failed to apply required labels.",)
+    github_client.create_pull_request.assert_called_once()
+
+
+def test_publish_reports_reviewer_failure_without_failing_pr_creation(
+    workflow: PullRequestWorkflow,
+    github_client: MagicMock,
+    publish_arguments: dict,
+) -> None:
+    """Reviewer-request failure must be visible without losing the created PR."""
+    pull_request = github_client.create_pull_request.return_value
+    pull_request.number = 42
+    pull_request.html_url = "https://github.com/example-owner/example-repo/pull/42"
+    pull_request.metadata_warnings = ("Failed to request reviewer 'reporter'.",)
+
+    def create_pull_request_with_warning(**kwargs):
+        kwargs["warning_collector"].append("Failed to request reviewer 'reporter'.")
+
+        return pull_request
+
+    github_client.create_pull_request.side_effect = create_pull_request_with_warning
+
+    result = workflow.publish(**publish_arguments)
+
+    assert result.pull_number == 42
+    assert result.metadata_warnings == ("Failed to request reviewer 'reporter'.",)
+    github_client.create_pull_request.assert_called_once()
+
+
+def test_publish_preserves_multiple_metadata_warnings(
+    workflow: PullRequestWorkflow,
+    github_client: MagicMock,
+    publish_arguments: dict,
+) -> None:
+    """Multiple metadata failures should be reported together."""
+    pull_request = github_client.create_pull_request.return_value
+    pull_request.number = 42
+    pull_request.html_url = "https://github.com/example-owner/example-repo/pull/42"
+    pull_request.metadata_warnings = (
+        "Failed to apply required labels.",
+        "Failed to request reviewer 'reporter'.",
+    )
+
+    def create_pull_request_with_warnings(**kwargs):
+        kwargs["warning_collector"].extend(
+            [
+                "Failed to apply required labels.",
+                "Failed to request reviewer 'reporter'.",
+            ]
+        )
+        return pull_request
+
+    github_client.create_pull_request.side_effect = create_pull_request_with_warnings
+
+    result = workflow.publish(**publish_arguments)
+
+    assert result.metadata_warnings == (
+        "Failed to apply required labels.",
+        "Failed to request reviewer 'reporter'.",
+    )
+    github_client.create_pull_request.assert_called_once()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any
 
 from github import Auth, Github
@@ -10,6 +12,21 @@ from langchain_community.utilities.github import GitHubAPIWrapper
 
 from codepilot.config.settings import ConfigurationError, Settings
 from codepilot.github.models import GitHubIssue
+
+logger = logging.getLogger(__name__)
+
+_CODEPILOT_ISSUE_BRANCH = re.compile(r"^codepilot/issue-(\d+)(?:-|$)", re.IGNORECASE)
+
+def _normalize_github_tool_names(tools: list[Any]) -> list[Any]:
+    """Normalize GitHub toolkit names for OpenAI-compatible function calling."""
+    for tool in tools:
+        name = getattr(tool, "name", None)
+        if isinstance(name, str):
+            normalized = re.sub(r"[^a-zA-Z0-9_-]+", "_", name).strip("_")
+            if not normalized:
+                raise ValueError("GitHub tool name cannot be empty after normalization.")
+            tool.name = normalized
+    return tools
 
 
 class GitHubClient:
@@ -52,11 +69,17 @@ class GitHubClient:
 
         self._api_wrapper = api_wrapper
         self._toolkit = toolkit or GitHubToolkit.from_github_api_wrapper(self._api_wrapper)
+        self._tools = _normalize_github_tool_names(self._toolkit.get_tools())
 
     @property
     def toolkit(self) -> GitHubToolkit:
         """Expose the toolkit for integration with LangChain agents."""
         return self._toolkit
+
+    @property
+    def tools(self) -> list[Any]:
+        """Return GitHub tools with OpenAI-compatible function names."""
+        return self._tools
 
     @property
     def repository(self) -> Any:
@@ -84,6 +107,29 @@ class GitHubClient:
             )
         return normalized
 
+    def get_open_codepilot_pr_issue_numbers(self) -> set[int]:
+        """Return issue numbers with an existing open CodePilot pull request.
+
+        CodePilot's PR workflow uses the stable branch convention
+        ``codepilot/issue-{number}-{slug}``. Requiring the matching
+        ``[CodePilot]`` title avoids matching unrelated branches.
+        """
+        issue_numbers: set[int] = set()
+        for pull_request in self.repository.get_pulls(state="open"):
+            title = getattr(pull_request, "title", "") or ""
+            if not isinstance(title, str) or not title.casefold().startswith("[codepilot]"):
+                continue
+
+            head_ref = getattr(getattr(pull_request, "head", None), "ref", "")
+            if not isinstance(head_ref, str):
+                continue
+
+            match = _CODEPILOT_ISSUE_BRANCH.match(head_ref)
+            if match:
+                issue_numbers.add(int(match.group(1)))
+
+        return issue_numbers
+
     def create_pull_request(
         self,
         *,
@@ -93,6 +139,7 @@ class GitHubClient:
         base: str,
         labels: tuple[str, ...] = ("codepilot-generated", "needs-review"),
         reviewer: str | None = None,
+        warning_collector: list[str] | None = None,
         draft: bool = False,
     ) -> Any:
         """Create a pull request from an existing branch."""
@@ -110,10 +157,58 @@ class GitHubClient:
         pull_request = self.repository.create_pull(
             title=title, body=body, head=head, base=base, draft=draft
         )
+
+        warnings = warning_collector if warning_collector is not None else []
+
         if labels:
-            pull_request.add_to_labels(*labels)
+            try:
+                pull_request.add_to_labels(*labels)
+            except Exception as exc:
+                message = f"Failed to apply labels: {exc}"
+                warnings.append(message)
+                logger.warning(
+                    "Pull request #%s was created, but applying labels failed: %s",
+                    pull_request.number,
+                    exc,
+                )
+
         if reviewer:
-            pull_request.create_review_request(reviewers=[reviewer])
+            requested_reviewer = reviewer.strip()
+            pull_request_author = getattr(
+                getattr(pull_request, "user", None),
+                "login",
+                None,
+            )
+
+            if (
+                requested_reviewer
+                and pull_request_author
+                and requested_reviewer.casefold() == pull_request_author.casefold()
+            ):
+                message = (
+                    f"Skipped reviewer '{requested_reviewer}': "
+                    "that account is the pull request author."
+                )
+                warnings.append(message)
+                logger.warning(
+                    "Pull request #%s was created; skipping review request for '%s' "
+                    "because that account is the pull request author.",
+                    pull_request.number,
+                    requested_reviewer,
+                )
+            elif requested_reviewer:
+                try:
+                    pull_request.create_review_request(reviewers=[requested_reviewer])
+                except Exception as exc:
+                    message = f"Failed to request reviewer '{requested_reviewer}': {exc}"
+                    warnings.append(message)
+                    logger.warning(
+                        "Pull request #%s was created, but requesting reviewer '%s' failed: %s",
+                        pull_request.number,
+                        requested_reviewer,
+                        exc,
+                    )
+
         return pull_request
 
     def is_pull_request_merged(self, pull_number: int) -> bool:

@@ -2,6 +2,8 @@
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -177,3 +179,69 @@ def test_rejects_invalid_output_limit(
             SandboxPolicy(root),
             max_output_characters=0,
         )
+
+
+def test_git_push_routes_through_approval_callback_before_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicitly approved git push is the only approval-gated command executed."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    approval = Mock(return_value=True)
+    subprocess_run = Mock(return_value=SimpleNamespace(returncode=0, stdout="pushed", stderr=""))
+    monkeypatch.setattr("codepilot.sandbox.executor.subprocess.run", subprocess_run)
+    executor = SandboxExecutor(SandboxPolicy(root), approval_callback=approval)
+
+    result = executor.execute(
+        ["git", "push", "origin", "main"],
+        working_directory=root,
+    )
+
+    assert result.status == CommandStatus.SUCCEEDED
+    approval.assert_called_once()
+    operation, details = approval.call_args.args
+    assert operation == "execute_git_push"
+    assert details["command"] == ["git", "push", "origin", "main"]
+    subprocess_run.assert_called_once()
+
+
+def test_git_push_is_not_executed_when_tui_approval_is_denied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected or unavailable approval leaves the command unexecuted."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    approval = Mock(return_value=False)
+    subprocess_run = Mock()
+    monkeypatch.setattr("codepilot.sandbox.executor.subprocess.run", subprocess_run)
+    executor = SandboxExecutor(SandboxPolicy(root), approval_callback=approval)
+
+    result = executor.execute(
+        ["git", "push", "origin", "main"],
+        working_directory=root,
+    )
+
+    assert result.status == CommandStatus.REQUIRES_APPROVAL
+    assert "not granted" in result.reason.lower()
+    subprocess_run.assert_not_called()
+
+
+def test_git_push_is_not_executed_when_approval_callback_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Approval callback errors fail closed."""
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    approval = Mock(side_effect=RuntimeError("TUI unavailable"))
+    subprocess_run = Mock()
+    monkeypatch.setattr("codepilot.sandbox.executor.subprocess.run", subprocess_run)
+    executor = SandboxExecutor(SandboxPolicy(root), approval_callback=approval)
+
+    result = executor.execute(
+        ["git", "push", "origin", "main"],
+        working_directory=root,
+    )
+
+    assert result.status == CommandStatus.REQUIRES_APPROVAL
+    assert "callback failed" in result.reason.lower()
+    subprocess_run.assert_not_called()

@@ -292,3 +292,29 @@ def test_is_pull_request_merged_returns_merge_status(
     assert result is expected
     client.repository.get_pull.assert_called_once_with(42)
     pull_request.is_merged.assert_called_once_with()
+
+def test_normalize_github_tool_names_preserves_tools_and_normalizes_names():
+    """GitHub tool names must satisfy OpenAI function-calling requirements."""
+    import re
+    from unittest.mock import MagicMock
+
+    from codepilot.github.client import _normalize_github_tool_names
+
+    get_issues = MagicMock()
+    get_issues.name = "Get Issues"
+
+    create_pr = MagicMock()
+    create_pr.name = "Create Pull Request"
+
+    tools = [get_issues, create_pr]
+
+    result = _normalize_github_tool_names(tools)
+
+    assert result is tools
+    assert result[0] is get_issues
+    assert result[1] is create_pr
+    assert get_issues.name == "Get_Issues"
+    assert create_pr.name == "Create_Pull_Request"
+
+    for tool in result:
+        assert re.fullmatch(r"[a-zA-Z0-9_-]+", tool.name)

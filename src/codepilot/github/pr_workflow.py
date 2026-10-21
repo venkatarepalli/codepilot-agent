@@ -18,6 +18,10 @@ class PullRequestWorkflowError(RuntimeError):
     """Raised when a pull-request workflow cannot safely continue."""
 
 
+class HumanApprovalRejectedError(PullRequestWorkflowError):
+    """Raised when a required human approval is explicitly rejected."""
+
+
 @dataclass(frozen=True, slots=True)
 class PullRequestResult:
     """Summary of a published CodePilot pull request."""
@@ -27,6 +31,7 @@ class PullRequestResult:
     pull_url: str
     title: str
     base_branch: str
+    metadata_warnings: tuple[str, ...] = ()
 
 
 class PullRequestWorkflow:
@@ -75,8 +80,14 @@ class PullRequestWorkflow:
         details: Mapping[str, Any],
     ) -> None:
         """Stop the workflow unless the approval callback explicitly approves."""
-        if callback(operation, details) is not True:
-            raise PullRequestWorkflowError(f"Human approval was not granted for: {operation}.")
+        try:
+            approved = callback(operation, details)
+        except Exception as exc:
+            raise PullRequestWorkflowError(
+                f"Approval callback failed for {operation}: {type(exc).__name__}: {exc}"
+            ) from exc
+        if approved is not True:
+            raise HumanApprovalRejectedError(f"Human approval was not granted for: {operation}.")
 
     def publish(
         self,
@@ -157,11 +168,15 @@ class PullRequestWorkflow:
 
         branch = f"codepilot/issue-{issue_number}-{self._slugify(issue_title)}"
 
+        changed_files = sorted(normalized_changes)
         approval_details = {
             "issue_number": issue_number,
             "branch": branch,
             "base_branch": base,
-            "files_changed": len(normalized_changes),
+            "files_changed": len(changed_files),
+            # Include the exact publication payload in the approval prompt so a
+            # human can verify scope instead of trusting a count alone.
+            "changed_files": changed_files,
         }
 
         # A larger change set must be explicitly reviewed before publication.
@@ -169,6 +184,23 @@ class PullRequestWorkflow:
             self._require_approval(
                 self._approval_callback,
                 "publish_changes_over_five_files",
+                approval_details,
+            )
+
+        # Obtain every required approval before creating any remote Git object.
+        # Blob/tree/commit creation is itself a write, even though it does not
+        # immediately publish a branch reference. Denials must have no remote
+        # side effects.
+        self._require_approval(
+            self._approval_callback,
+            "publish_branch",
+            approval_details,
+        )
+
+        if base.lower() in {"main", "master"}:
+            self._require_approval(
+                self._approval_callback,
+                "create_pull_request_against_protected_branch",
                 approval_details,
             )
 
@@ -203,22 +235,7 @@ class PullRequestWorkflow:
                 [parent_commit],
             )
 
-            # Obtain every required approval before the first remote write.
-            # Both approvals must succeed before the branch is created.
-            self._require_approval(
-                self._approval_callback,
-                "publish_branch",
-                approval_details,
-            )
-
-            if base.lower() in {"main", "master"}:
-                self._require_approval(
-                    self._approval_callback,
-                    "create_pull_request_against_protected_branch",
-                    approval_details,
-                )
-
-            # Creating the reference publishes the new commit to GitHub.
+            # Publishing the approved commit starts with creating the branch ref.
             repository.create_git_ref(
                 ref=f"refs/heads/{branch}",
                 sha=commit.sha,
@@ -237,12 +254,15 @@ class PullRequestWorkflow:
                 f"Issue: {issue_url}"
             )
 
+            metadata_warnings: list[str] = []
+
             pull_request = self._github_client.create_pull_request(
                 title=pull_title,
                 body=pull_body,
                 head=branch,
                 base=base,
                 reviewer=reviewer,
+                warning_collector=metadata_warnings,
             )
 
             return PullRequestResult(
@@ -251,6 +271,7 @@ class PullRequestWorkflow:
                 pull_url=pull_request.html_url,
                 title=pull_title,
                 base_branch=base,
+                metadata_warnings=tuple(metadata_warnings),
             )
 
         except PullRequestWorkflowError:

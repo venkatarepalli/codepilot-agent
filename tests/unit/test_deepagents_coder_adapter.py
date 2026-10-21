@@ -40,6 +40,12 @@ def test_planner_uses_issue_and_workspace_context(issue, workspace) -> None:
     assert "Fix calculation" in prompt
     assert "app.py" in prompt
     assert "return 1" in prompt
+    invocation = agent.invoke.call_args.args[0]
+    file_data = invocation["files"]["/app.py"]
+    assert file_data["content"] == "def answer():\n    return 1\n"
+    assert file_data["encoding"] == "utf-8"
+    assert file_data["created_at"]
+    assert file_data["modified_at"]
 
 
 def test_implementer_applies_valid_change_through_workspace(issue, workspace) -> None:
@@ -51,6 +57,8 @@ def test_implementer_applies_valid_change_through_workspace(issue, workspace) ->
 
     adapter.implementer(issue, workspace, "Change the return value.", 1, None)
 
+    invocation = agent.invoke.call_args.args[0]
+    assert invocation["files"]["/app.py"]["content"] == "def answer():\n    return 1\n"
     coder_workspace.write_file.assert_called_once_with(
         workspace, "app.py", "def answer():\n    return 42\n"
     )
@@ -133,6 +141,17 @@ def test_parse_change_set_extracts_json_after_explanatory_text():
     assert "return price * quantity" in result["changes"][0]["content"]
 
 
+def test_parse_change_set_ambiguous_error_includes_a_useful_preview() -> None:
+    first_change_set = {"changes": [{"path": "first.py", "content": "x" * 420}]}
+    second_change_set = {"changes": [{"path": "second.py", "content": "SECOND_CANDIDATE_MARKER"}]}
+    response_text = f"{json.dumps(first_change_set)}\n{json.dumps(second_change_set)}"
+
+    with pytest.raises(ValueError, match="multiple possible JSON change sets") as exc_info:
+        DeepAgentsCoderAdapter._parse_change_set(response_text)
+
+    assert "SECOND_CANDIDATE_MARKER" in str(exc_info.value)
+
+
 def test_context_does_not_include_environment_files(issue, tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()
@@ -144,6 +163,9 @@ def test_context_does_not_include_environment_files(issue, tmp_path: Path) -> No
 
     adapter.planner(issue, SimpleNamespace(path=root))
 
-    prompt = agent.invoke.call_args.args[0]["messages"][0]["content"]
+    invocation = agent.invoke.call_args.args[0]
+    prompt = invocation["messages"][0]["content"]
     assert "safe" in prompt
     assert "API_KEY" not in prompt
+    assert "/app.py" in invocation["files"]
+    assert "/.env" not in invocation["files"]
