@@ -1,0 +1,899 @@
+diff --git a/README.md b/README.md
+index 7de28f2..f415044 100644
+--- a/README.md
++++ b/README.md
+@@ -249,7 +249,7 @@ Run `python -m codepilot.runner` from the project root after configuring `.env`.
+ 
+ ### Direct task mode
+ 
+-Press `i` and enter a free-form coding task. CodePilot clones the configured repository and runs the existing Coder Agent/test workflow in its isolated task workspace. The proposed diff is retained for inspection. Direct tasks do **not** automatically open a pull request because they are not associated with a real GitHub issue; issue-linked PR publication continues through the GitHub issue workflow.
++Press `i` to open the multi-line task editor. Paste or type the complete task, use `Enter` for new lines, and press `Ctrl+Enter` to submit it. CodePilot clones the configured repository and runs the existing Coder Agent/test workflow in its isolated task workspace. The proposed diff is retained for inspection. Direct tasks do **not** automatically open a pull request because they are not associated with a real GitHub issue; issue-linked PR publication continues through the GitHub issue workflow.
+ 
+ ### Skip and stop
+ 
+@@ -342,8 +342,8 @@ See [`docs/engineering-issues/`](docs/engineering-issues/).
+ 
+ - The TUI logs runtime status and result events, but the underlying agent does not yet stream every model thought or tool call into the Logs panel.
+ - Direct tasks produce a sandboxed proposed diff but do not automatically publish a pull request; PR publication currently requires a real GitHub issue.
+-- Interactive TUI/runtime integration has unit tests, but a live run with actual GitHub credentials and an LLM has not been verified in this environment.
+-- A configured LLM smoke test validates the local coding path, but does not replace a live issue-to-pull-request test in a disposable GitHub repository.
++- A real-model direct coding task has been verified through the integrated TUI against a disposable GitHub repository; the full live GitHub issue-to-pull-request workflow remains unverified.
++- Agent Logs forwards CodePilot and selected dependency log records while the TUI is active. Streaming every internal model thought/tool call remains outside the current implementation.
+ - The model factory implements Google and OpenAI providers; each provider/model combination must be tested with its own credentials before claiming runtime compatibility.
+ 
+ ## Demo
+diff --git a/docs/requirement-matrix.md b/docs/requirement-matrix.md
+index 3bc275b..b029e05 100644
+--- a/docs/requirement-matrix.md
++++ b/docs/requirement-matrix.md
+@@ -17,7 +17,7 @@ This matrix maps assignment themes to the current source tree and available test
+ | CP-011 | Guardrails | `src/codepilot/sandbox/policy.py`, `src/codepilot/sandbox/executor.py` | `tests/unit/test_sandbox_policy.py`, `tests/unit/test_sandbox_executor.py` | Component implemented and unit-tested |
+ | CP-012 | Human-in-the-loop approval gates | `src/codepilot/github/pr_workflow.py`, `src/codepilot/agents/coder.py`, `src/codepilot/runner.py` | `tests/unit/test_pr_workflow.py`, `tests/unit/test_coder_agent_test_integration.py` | PR approval gates covered by tests; retry gate added in this review copy, pending full-suite verification |
+ | CP-013 | Pull-request workflow | `src/codepilot/github/pr_workflow.py`, `src/codepilot/agents/orchestrator.py` | `tests/unit/test_pr_workflow.py`, `tests/unit/test_orchestrator_pr_integration.py` | Component/integration tests exist; live PR publication not verified here |
+-| CP-014 | Four-panel TUI | `src/codepilot/tui/app.py`, `src/codepilot/runner.py`, `src/codepilot/github/polling.py` | `tests/unit/test_tui_app.py`, `tests/unit/test_runner.py`, `tests/unit/test_github_polling.py` | Four panels, runtime startup/shutdown hooks, issue snapshots, direct-task dispatch, queue skipping, and a synchronous human-approval bridge are implemented; the new TUI/runtime tests could not be executed in this review environment because Textual and DeepAgents dependencies are not installed. A live interactive run remains unverified. |
++| CP-014 | Four-panel TUI | `src/codepilot/tui/app.py`, `src/codepilot/runner.py`, `src/codepilot/github/polling.py` | `tests/unit/test_tui_app.py`, `tests/unit/test_runner.py`, `tests/unit/test_github_polling.py` | Real-model direct-task execution through the TUI was verified against the disposable `codepilot-smoke-test` repository on 2026-10-16; four-panel layout, multiline input, log forwarding, and full issue-to-PR approval flow are under active refinement/verification. |
+ 
+ ## Verification commands
+ 
+diff --git a/src/codepilot/agents/coder.py b/src/codepilot/agents/coder.py
+index f149d39..7c2ffe0 100644
+--- a/src/codepilot/agents/coder.py
++++ b/src/codepilot/agents/coder.py
+@@ -1,6 +1,7 @@
+ """Coder Agent: plan, implement, test, retry, and prepare a proposed diff."""
+ 
+ import difflib
++import logging
+ from collections.abc import Callable, Mapping, Sequence
+ from dataclasses import dataclass
+ from pathlib import Path
+@@ -14,6 +15,8 @@ from codepilot.sandbox.coder_workspace import CoderWorkspace
+ from codepilot.sandbox.execution_models import CommandExecutionResult
+ from codepilot.sandbox.workspace import WorkspaceInfo
+ 
++logger = logging.getLogger(__name__)
++
+ 
+ @dataclass(frozen=True, slots=True)
+ class ImplementationFeedback:
+@@ -133,10 +136,10 @@ class CoderAgent:
+                             "proposing actual file changes."
+                         )
+                     )
+-                    print(
+-                        f"[CodePilot] Attempt {attempt} produced no file changes. "
+-                        "Retrying implementation with explicit feedback.",
+-                        flush=True,
++                    logger.info(
++                        "Attempt %s produced no file changes; retrying implementation "
++                        "with explicit feedback.",
++                        attempt,
+                     )
+                     continue
+ 
+diff --git a/src/codepilot/agents/deepagents_coder_adapter.py b/src/codepilot/agents/deepagents_coder_adapter.py
+index 03cc982..c17ba33 100644
+--- a/src/codepilot/agents/deepagents_coder_adapter.py
++++ b/src/codepilot/agents/deepagents_coder_adapter.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import json
++import logging
+ import random
+ import time
+ from datetime import UTC, datetime
+@@ -13,6 +14,8 @@ from codepilot.github.models import GitHubIssue
+ from codepilot.sandbox.coder_workspace import CoderWorkspace
+ from codepilot.sandbox.workspace import WorkspaceInfo
+ 
++logger = logging.getLogger(__name__)
++
+ 
+ class DeepAgentsCoderAdapter:
+     """Use a DeepAgents agent for planning and proposing controlled file edits.
+@@ -44,9 +47,9 @@ class DeepAgentsCoderAdapter:
+             "Do not claim to have changed files or run tests."
+         )
+ 
+-        print("[CodePilot] Requesting implementation plan from the configured LLM...", flush=True)
++        logger.info("Requesting implementation plan from the configured LLM.")
+         result = self._invoke(prompt, workspace_files=workspace_files)
+-        print("[CodePilot] Implementation plan received.", flush=True)
++        logger.info("Implementation plan received.")
+ 
+         if not result.strip():
+             raise ValueError("DeepAgents returned an empty implementation plan.")
+@@ -80,13 +83,10 @@ class DeepAgentsCoderAdapter:
+             "parent-directory traversal, secrets, or files under a working/ directory. "
+             'If no safe change can be proposed, return {"changes":[]}.'
+         )
+-        print("[CodePilot] Requesting code changes from the configured LLM...", flush=True)
++        logger.info("Requesting code changes from the configured LLM.")
+         response = self._invoke(prompt, workspace_files=workspace_files)
+-        print("[CodePilot] Code-change response received.", flush=True)
+-        print(
+-            f"[CodePilot] Change-set response preview: {response[:1500]!r}",
+-            flush=True,
+-        )
++        logger.info("Code-change response received.")
++        logger.debug("Change-set response preview: %r", response[:1500])
+         payload = self._parse_change_set(response)
+         changes = payload.get("changes")
+         if not isinstance(changes, list):
+@@ -251,16 +251,14 @@ class DeepAgentsCoderAdapter:
+                 delay = base_delay_seconds * (2 ** (attempt - 1))
+                 delay += random.uniform(0, 1)
+ 
+-                print(
+-                    f"[CodePilot] Transient model error "
+-                    f"(attempt {attempt}/{max_attempts}): "
+-                    f"{type(exc).__name__}: {exc}",
+-                    flush=True,
+-                )
+-                print(
+-                    f"[CodePilot] Retrying model request in {delay:.1f} seconds...",
+-                    flush=True,
++                logger.warning(
++                    "Transient model error (attempt %s/%s): %s: %s",
++                    attempt,
++                    max_attempts,
++                    type(exc).__name__,
++                    exc,
+                 )
++                logger.info("Retrying model request in %.1f seconds.", delay)
+                 time.sleep(delay)
+ 
+         def extract_text(content: Any) -> str | None:
+diff --git a/src/codepilot/config/bootstrap.py b/src/codepilot/config/bootstrap.py
+index e46aa90..e05e233 100644
+--- a/src/codepilot/config/bootstrap.py
++++ b/src/codepilot/config/bootstrap.py
+@@ -42,6 +42,7 @@ def create_orchestrator(
+     executor = SandboxExecutor(
+         SandboxPolicy(resolved_workspace_root),
+         timeout_seconds=120.0,
++        approval_callback=approval_callback,
+     )
+     coder_workspace = CoderWorkspace(manager, executor)
+ 
+diff --git a/src/codepilot/github/pr_workflow.py b/src/codepilot/github/pr_workflow.py
+index a45b00d..de19ee3 100644
+--- a/src/codepilot/github/pr_workflow.py
++++ b/src/codepilot/github/pr_workflow.py
+@@ -75,7 +75,13 @@ class PullRequestWorkflow:
+         details: Mapping[str, Any],
+     ) -> None:
+         """Stop the workflow unless the approval callback explicitly approves."""
+-        if callback(operation, details) is not True:
++        try:
++            approved = callback(operation, details)
++        except Exception as exc:
++            raise PullRequestWorkflowError(
++                f"Approval callback failed for {operation}: {type(exc).__name__}: {exc}"
++            ) from exc
++        if approved is not True:
+             raise PullRequestWorkflowError(f"Human approval was not granted for: {operation}.")
+ 
+     def publish(
+@@ -172,6 +178,23 @@ class PullRequestWorkflow:
+                 approval_details,
+             )
+ 
++        # Obtain every required approval before creating any remote Git object.
++        # Blob/tree/commit creation is itself a write, even though it does not
++        # immediately publish a branch reference. Denials must have no remote
++        # side effects.
++        self._require_approval(
++            self._approval_callback,
++            "publish_branch",
++            approval_details,
++        )
++
++        if base.lower() in {"main", "master"}:
++            self._require_approval(
++                self._approval_callback,
++                "create_pull_request_against_protected_branch",
++                approval_details,
++            )
++
+         repository = self._github_client.repository
+ 
+         try:
+@@ -203,22 +226,7 @@ class PullRequestWorkflow:
+                 [parent_commit],
+             )
+ 
+-            # Obtain every required approval before the first remote write.
+-            # Both approvals must succeed before the branch is created.
+-            self._require_approval(
+-                self._approval_callback,
+-                "publish_branch",
+-                approval_details,
+-            )
+-
+-            if base.lower() in {"main", "master"}:
+-                self._require_approval(
+-                    self._approval_callback,
+-                    "create_pull_request_against_protected_branch",
+-                    approval_details,
+-                )
+-
+-            # Creating the reference publishes the new commit to GitHub.
++            # Publishing the approved commit starts with creating the branch ref.
+             repository.create_git_ref(
+                 ref=f"refs/heads/{branch}",
+                 sha=commit.sha,
+diff --git a/src/codepilot/runner.py b/src/codepilot/runner.py
+index 82368a9..bf90a31 100644
+--- a/src/codepilot/runner.py
++++ b/src/codepilot/runner.py
+@@ -32,6 +32,40 @@ from codepilot.github.pr_workflow import PullRequestWorkflow
+ logger = logging.getLogger("codepilot.runner")
+ 
+ 
++class _TUILogForwardingHandler(logging.Handler):
++    """Send application/library log records to the Textual log panel, not stderr."""
++
++    _FORWARDED_PREFIXES = (
++        "codepilot",
++        "deepagents",
++        "langchain",
++        "langgraph",
++        "openai",
++        "github",
++        "httpx",
++        "httpcore",
++    )
++
++    def __init__(self, runtime: Any) -> None:
++        super().__init__(level=logging.INFO)
++        self._runtime = runtime
++        self.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
++
++    def emit(self, record: logging.LogRecord) -> None:
++        if not record.name.startswith(self._FORWARDED_PREFIXES):
++            return
++        try:
++            self._runtime._post_ui(
++                "append_log",
++                self.format(record),
++                source=record.name.rsplit(".", 1)[-1],
++            )
++        except Exception:
++            # A logger must never write a diagnostic traceback to stderr while
++            # Textual owns the terminal. Failed UI forwarding is best-effort.
++            return
++
++
+ def _normalize_tool_names(tools: list[Any]) -> list[Any]:
+     """Return tools with unique names accepted by OpenAI function calling."""
+     normalized: list[Any] = []
+@@ -227,8 +261,10 @@ class CodePilotRuntime:
+             logger.debug("Skipping TUI update during shutdown: %s", method_name)
+ 
+     def _log(self, message: str, *, source: str = "Runtime") -> None:
+-        logger.info("[%s] %s", source, message)
+-        self._post_ui("append_log", message, source=source)
++        if self.interactive:
++            self._post_ui("append_log", message, source=source)
++        else:
++            logger.info("[%s] %s", source, message)
+ 
+     def _update_task(
+         self,
+@@ -614,10 +650,26 @@ def run_tui(*, settings: Settings | None = None) -> int:
+         shutdown_handler=runtime.stop,
+     )
+     runtime.attach_app(app)
++
++    # Textual owns the terminal while the TUI is active. Temporarily replace
++    # root console handlers with a bridge that forwards application log records
++    # into Agent Logs instead of printing over the dashboard.
++    root_logger = logging.getLogger()
++    previous_handlers = root_logger.handlers[:]
++    previous_level = root_logger.level
++    tui_handler = _TUILogForwardingHandler(runtime)
++    for handler in previous_handlers:
++        root_logger.removeHandler(handler)
++    root_logger.addHandler(tui_handler)
++    root_logger.setLevel(logging.INFO)
+     try:
+         app.run()
+     finally:
+         runtime.stop()
++        root_logger.removeHandler(tui_handler)
++        for handler in previous_handlers:
++            root_logger.addHandler(handler)
++        root_logger.setLevel(previous_level)
+     return 0
+ 
+ 
+diff --git a/src/codepilot/sandbox/executor.py b/src/codepilot/sandbox/executor.py
+index 1f17f55..60a526a 100644
+--- a/src/codepilot/sandbox/executor.py
++++ b/src/codepilot/sandbox/executor.py
+@@ -2,8 +2,9 @@
+ 
+ import subprocess
+ import time
+-from collections.abc import Sequence
++from collections.abc import Callable, Mapping, Sequence
+ from pathlib import Path
++from typing import Any
+ 
+ from codepilot.sandbox.execution_models import (
+     CommandExecutionResult,
+@@ -12,6 +13,8 @@ from codepilot.sandbox.execution_models import (
+ from codepilot.sandbox.models import SecurityDecision
+ from codepilot.sandbox.policy import SandboxPolicy
+ 
++ApprovalCallback = Callable[[str, Mapping[str, Any]], bool]
++
+ 
+ class SandboxExecutor:
+     """Execute commands only after validating them against sandbox policy."""
+@@ -22,6 +25,7 @@ class SandboxExecutor:
+         *,
+         timeout_seconds: float = 60.0,
+         max_output_characters: int = 100_000,
++        approval_callback: ApprovalCallback | None = None,
+     ) -> None:
+         """Configure command execution limits."""
+         if timeout_seconds <= 0:
+@@ -33,6 +37,7 @@ class SandboxExecutor:
+         self.policy = policy
+         self.timeout_seconds = timeout_seconds
+         self.max_output_characters = max_output_characters
++        self.approval_callback = approval_callback
+ 
+     def execute(
+         self,
+@@ -70,11 +75,43 @@ class SandboxExecutor:
+             )
+ 
+         if policy_result.decision == SecurityDecision.REQUIRES_APPROVAL:
+-            return CommandExecutionResult(
+-                status=CommandStatus.REQUIRES_APPROVAL,
+-                command=arguments,
+-                reason=policy_result.reason,
++            # Preserve the fail-closed behavior when no interactive approval
++            # callback is configured. In TUI mode, a positive decision allows
++            # this one validated command to proceed; denials never reach subprocess.
++            if self.approval_callback is None:
++                return CommandExecutionResult(
++                    status=CommandStatus.REQUIRES_APPROVAL,
++                    command=arguments,
++                    reason=policy_result.reason,
++                )
++
++            operation = (
++                "execute_git_push"
++                if self.policy.is_git_push_command(arguments)
++                else "execute_command_requires_approval"
+             )
++            details = {
++                "command": list(arguments),
++                "working_directory": str(Path(working_directory).resolve()),
++                "reason": policy_result.reason,
++            }
++            try:
++                approved = self.approval_callback(operation, details) is True
++            except Exception as exc:
++                return CommandExecutionResult(
++                    status=CommandStatus.REQUIRES_APPROVAL,
++                    command=arguments,
++                    reason=(
++                        "Human-approval callback failed; command was not executed: "
++                        f"{type(exc).__name__}: {exc}"
++                    ),
++                )
++            if not approved:
++                return CommandExecutionResult(
++                    status=CommandStatus.REQUIRES_APPROVAL,
++                    command=arguments,
++                    reason=f"Human approval was not granted. {policy_result.reason}",
++                )
+ 
+         started_at = time.monotonic()
+ 
+diff --git a/src/codepilot/sandbox/policy.py b/src/codepilot/sandbox/policy.py
+index c95a9b2..6927e3d 100644
+--- a/src/codepilot/sandbox/policy.py
++++ b/src/codepilot/sandbox/policy.py
+@@ -105,9 +105,7 @@ class SandboxPolicy:
+         if directory_result.decision != SecurityDecision.ALLOW:
+             return directory_result
+ 
+-        normalized_command = " ".join(arguments[:2]).lower()
+-
+-        if normalized_command == "git push":
++        if self.is_git_push_command(arguments):
+             return SecurityCheckResult(
+                 SecurityDecision.REQUIRES_APPROVAL,
+                 "Pushing changes to a Git remote requires human approval.",
+@@ -118,6 +116,45 @@ class SandboxPolicy:
+             "The command passed the sandbox policy checks.",
+         )
+ 
++    @staticmethod
++    def is_git_push_command(arguments: Sequence[str]) -> bool:
++        """Recognize Git push subcommands, including commands with global options."""
++        if not arguments or Path(arguments[0].replace("\\", "/")).name.lower() not in {
++            "git",
++            "git.exe",
++        }:
++            return False
++
++        options_with_value = {
++            "-C",
++            "-c",
++            "--git-dir",
++            "--work-tree",
++            "--namespace",
++            "--config-env",
++        }
++        index = 1
++        while index < len(arguments):
++            argument = arguments[index]
++            if argument == "--":
++                return False
++            if argument in options_with_value:
++                index += 2
++                continue
++            if argument.startswith(("-C", "-c")) and len(argument) > 2:
++                index += 1
++                continue
++            if argument.startswith(
++                ("--git-dir=", "--work-tree=", "--namespace=", "--config-env=")
++            ):
++                index += 1
++                continue
++            if argument.startswith("-"):
++                index += 1
++                continue
++            return argument.lower() == "push"
++        return False
++
+     def check_path(
+         self,
+         path: str | Path,
+diff --git a/src/codepilot/tui/app.py b/src/codepilot/tui/app.py
+index 3e726c6..3a4b71b 100644
+--- a/src/codepilot/tui/app.py
++++ b/src/codepilot/tui/app.py
+@@ -37,26 +37,38 @@ class NewTaskScreen(ModalScreen[str | None]):
+     CSS = """
+     NewTaskScreen { align: center middle; }
+     #task-dialog {
+-        width: 80%; max-width: 100; height: auto; padding: 1 2;
+-        border: round $accent; background: $panel;
++        width: 88%; max-width: 112; height: 70%; min-height: 16;
++        padding: 1 2; border: round $accent; background: $panel;
+     }
+-    #task-input { margin-top: 1; }
+-    #task-help { color: $text-muted; margin-top: 1; }
++    #task-input { height: 1fr; min-height: 6; margin-top: 1; }
++    #task-help { height: 2; color: $text-muted; margin-top: 1; }
+     """
++    BINDINGS = [
++        Binding("ctrl+enter", "submit_task", "Submit task", priority=True),
++        Binding("escape", "cancel_task", "Cancel", priority=True),
++    ]
+ 
+     def compose(self) -> ComposeResult:
+         with Vertical(id="task-dialog"):
+             yield Label("Enter a direct coding task")
+-            yield Input(placeholder="Describe the task…", id="task-input")
+-            yield Label("Enter submits · Escape cancels", id="task-help")
++            yield TextArea(
++                "",
++                placeholder="Describe the task… (multiple lines are supported)",
++                soft_wrap=True,
++                id="task-input",
++            )
++            yield Label(
++                "Enter adds a line · Ctrl+Enter submits · Escape cancels",
++                id="task-help",
++            )
+ 
+-    @on(Input.Submitted, "#task-input")
+-    def submit_task(self, event: Input.Submitted) -> None:
+-        task = event.value.strip()
++    def action_submit_task(self) -> None:
++        """Submit the complete, potentially multi-line task in one action."""
++        task = self.query_one("#task-input", TextArea).text.strip()
+         if task:
+             self.dismiss(task)
+ 
+-    def key_escape(self) -> None:
++    def action_cancel_task(self) -> None:
+         self.dismiss(None)
+ 
+ 
+@@ -152,16 +164,16 @@ class CodePilotApp(App[None]):
+     Screen { layout: vertical; }
+     #dashboard {
+         height: 1fr; layout: grid; grid-size: 2 2;
+-        grid-columns: 1fr 2fr; grid-rows: 1fr 1fr;
++        grid-columns: 1fr 1fr; grid-rows: 1fr 1fr;
+     }
+-    .panel { border: round $primary; padding: 0 1; height: 1fr; }
++    .panel { border: round $primary; padding: 0 1; height: 1fr; background: $background; }
+     .panel-title { text-style: bold; color: $accent; height: 1; }
+     #issues-panel { column-span: 1; }
+     #task-panel { column-span: 1; }
+     #logs-panel { column-span: 1; }
+     #approval-panel { column-span: 1; }
+     #issues-content, #task-content, #approval-content { height: 1fr; overflow-y: auto; }
+-    #agent-log { height: 1fr; border: none; padding: 0; }
++    #agent-log { height: 1fr; border: none; padding: 0; background: $background; }
+     #approval-command { dock: bottom; }
+     #status-bar { height: 1; padding: 0 1; background: $panel; }
+     """
+diff --git a/tests/unit/test_bootstrap.py b/tests/unit/test_bootstrap.py
+index eea7e8a..51dd53e 100644
+--- a/tests/unit/test_bootstrap.py
++++ b/tests/unit/test_bootstrap.py
+@@ -49,3 +49,28 @@ def test_create_orchestrator_passes_tools(monkeypatch):
+         "pytest",
+         "-q",
+     ]
++
++
++def test_create_orchestrator_passes_approval_callback_to_sandbox_executor(
++    monkeypatch, tmp_path
++):
++    """The interactive HITL callback is wired into guarded command execution."""
++    approval_callback = MagicMock(return_value=True)
++    executor_factory = MagicMock(return_value=object())
++    monkeypatch.setattr(bootstrap, "create_chat_model", lambda: object())
++    monkeypatch.setattr(bootstrap, "SandboxExecutor", executor_factory)
++    monkeypatch.setattr(bootstrap, "WorkspaceManager", lambda _root: object())
++    monkeypatch.setattr(bootstrap, "CoderWorkspace", lambda *_args: object())
++    monkeypatch.setattr(bootstrap, "EpisodicMemory", lambda: object())
++    semantic_memory_factory = MagicMock()
++    semantic_memory_factory.from_persistent_directory.return_value = object()
++    monkeypatch.setattr(bootstrap, "SemanticMemory", semantic_memory_factory)
++    monkeypatch.setattr(bootstrap, "DefaultEmbeddingFunction", lambda: object())
++    monkeypatch.setattr(bootstrap, "CodePilotOrchestrator", MagicMock(return_value=object()))
++
++    bootstrap.create_orchestrator(
++        workspace_root=tmp_path / "workspace",
++        approval_callback=approval_callback,
++    )
++
++    assert executor_factory.call_args.kwargs["approval_callback"] is approval_callback
+diff --git a/tests/unit/test_coder_agent.py b/tests/unit/test_coder_agent.py
+index 45842c3..a627652 100644
+--- a/tests/unit/test_coder_agent.py
++++ b/tests/unit/test_coder_agent.py
+@@ -235,6 +235,7 @@ def test_empty_change_set_retries_implementation(
+     coder_workspace: CoderWorkspace,
+     repository: Path,
+     issue: GitHubIssue,
++    capsys: pytest.CaptureFixture[str],
+ ) -> None:
+     """An empty change set triggers a retry with explicit feedback."""
+     attempts = []
+@@ -281,6 +282,8 @@ def test_empty_change_set_retries_implementation(
+ 
+     # The original repository must remain unchanged.
+     assert (repository / "app.py").read_text(encoding="utf-8") == "answer = 1\n"
++    # Retry diagnostics use logging so they do not write over an active TUI.
++    assert capsys.readouterr().out == ""
+ 
+ 
+ def test_empty_plan_is_rejected(
+diff --git a/tests/unit/test_pr_workflow.py b/tests/unit/test_pr_workflow.py
+index 928280f..1968cae 100644
+--- a/tests/unit/test_pr_workflow.py
++++ b/tests/unit/test_pr_workflow.py
+@@ -157,16 +157,40 @@ def test_publish_requires_approval_before_branch_creation(
+     approvals: MagicMock,
+     publish_arguments: dict,
+ ) -> None:
+-    """Do not publish a branch when human approval is denied."""
++    """Do not create remote Git objects when human approval is denied."""
+     approvals.return_value = False
+ 
+     with pytest.raises(PullRequestWorkflowError, match="publish_branch"):
+         workflow.publish(**publish_arguments)
+ 
+-    github_client.repository.create_git_ref.assert_not_called()
++    repository = github_client.repository
++    repository.create_git_blob.assert_not_called()
++    repository.create_git_tree.assert_not_called()
++    repository.create_git_commit.assert_not_called()
++    repository.create_git_ref.assert_not_called()
+     github_client.create_pull_request.assert_not_called()
+ 
+ 
++
++def test_publish_stops_when_approval_callback_raises(
++    workflow: PullRequestWorkflow,
++    github_client: MagicMock,
++    approvals: MagicMock,
++    publish_arguments: dict,
++) -> None:
++    """An unavailable approval UI fails closed before any GitHub object is written."""
++    approvals.side_effect = RuntimeError("approval UI unavailable")
++
++    with pytest.raises(PullRequestWorkflowError, match="Approval callback failed"):
++        workflow.publish(**publish_arguments)
++
++    repository = github_client.repository
++    repository.create_git_blob.assert_not_called()
++    repository.create_git_tree.assert_not_called()
++    repository.create_git_commit.assert_not_called()
++    repository.create_git_ref.assert_not_called()
++    github_client.create_pull_request.assert_not_called()
++
+ def test_publish_requires_approval_for_more_than_five_files(
+     workflow: PullRequestWorkflow,
+     approvals: MagicMock,
+@@ -201,8 +225,12 @@ def test_publish_stops_when_large_change_approval_is_denied(
+     ):
+         workflow.publish(**publish_arguments)
+ 
+-    github_client.repository.create_git_blob.assert_not_called()
+-    github_client.repository.create_git_ref.assert_not_called()
++    repository = github_client.repository
++    repository.create_git_blob.assert_not_called()
++    repository.create_git_tree.assert_not_called()
++    repository.create_git_commit.assert_not_called()
++    repository.create_git_ref.assert_not_called()
++    github_client.create_pull_request.assert_not_called()
+ 
+ 
+ def test_publish_requires_approval_for_master_branch(
+@@ -241,8 +269,12 @@ def test_publish_stops_when_protected_branch_approval_is_denied(
+     ):
+         workflow.publish(**publish_arguments)
+ 
+-    # Approval is requested before the first remote write, so no orphan branch remains.
+-    github_client.repository.create_git_ref.assert_not_called()
++    # Approval is requested before any remote Git object is created.
++    repository = github_client.repository
++    repository.create_git_blob.assert_not_called()
++    repository.create_git_tree.assert_not_called()
++    repository.create_git_commit.assert_not_called()
++    repository.create_git_ref.assert_not_called()
+     github_client.create_pull_request.assert_not_called()
+ 
+ 
+diff --git a/tests/unit/test_runner.py b/tests/unit/test_runner.py
+index 1f4b49e..2475cba 100644
+--- a/tests/unit/test_runner.py
++++ b/tests/unit/test_runner.py
+@@ -1,5 +1,6 @@
+ """Tests for the CodePilot command-line runner."""
+ 
++import logging
+ from threading import Event
+ from types import SimpleNamespace
+ from unittest.mock import MagicMock
+@@ -229,3 +230,31 @@ def test_skip_issue_discards_oldest_queued_issue_for_this_session(monkeypatch):
+     assert issue.number in runtime._attempted_issues
+     assert app.issues[0]["status"] == "SKIPPED"
+     polling.release_issue.assert_called_once_with(issue.number)
++
++
++def test_tui_logging_handler_forwards_background_logs_to_ui() -> None:
++    """Application logs are forwarded to Agent Logs instead of the terminal."""
++    captured: list[tuple[str, str, str]] = []
++
++    class RuntimeProbe:
++        def _post_ui(self, method_name, message, *, source):
++            captured.append((method_name, message, source))
++
++    handler = runner._TUILogForwardingHandler(RuntimeProbe())
++    record = logging.LogRecord(
++        name="codepilot.agents.deepagents_coder_adapter",
++        level=logging.INFO,
++        pathname=__file__,
++        lineno=1,
++        msg="Requesting code changes from the configured LLM.",
++        args=(),
++        exc_info=None,
++    )
++
++    handler.emit(record)
++
++    assert len(captured) == 1
++    method_name, message, source = captured[0]
++    assert method_name == "append_log"
++    assert "Requesting code changes" in message
++    assert source == "deepagents_coder_adapter"
+diff --git a/tests/unit/test_sandbox_executor.py b/tests/unit/test_sandbox_executor.py
+index b030c55..a35861c 100644
+--- a/tests/unit/test_sandbox_executor.py
++++ b/tests/unit/test_sandbox_executor.py
+@@ -2,6 +2,8 @@
+ 
+ import sys
+ from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import Mock
+ 
+ import pytest
+ 
+@@ -177,3 +179,71 @@ def test_rejects_invalid_output_limit(
+             SandboxPolicy(root),
+             max_output_characters=0,
+         )
++
++
++def test_git_push_routes_through_approval_callback_before_execution(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    """An explicitly approved git push is the only approval-gated command executed."""
++    root = tmp_path / "sandbox"
++    root.mkdir()
++    approval = Mock(return_value=True)
++    subprocess_run = Mock(
++        return_value=SimpleNamespace(returncode=0, stdout="pushed", stderr="")
++    )
++    monkeypatch.setattr("codepilot.sandbox.executor.subprocess.run", subprocess_run)
++    executor = SandboxExecutor(SandboxPolicy(root), approval_callback=approval)
++
++    result = executor.execute(
++        ["git", "push", "origin", "main"],
++        working_directory=root,
++    )
++
++    assert result.status == CommandStatus.SUCCEEDED
++    approval.assert_called_once()
++    operation, details = approval.call_args.args
++    assert operation == "execute_git_push"
++    assert details["command"] == ["git", "push", "origin", "main"]
++    subprocess_run.assert_called_once()
++
++
++def test_git_push_is_not_executed_when_tui_approval_is_denied(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    """A rejected or unavailable approval leaves the command unexecuted."""
++    root = tmp_path / "sandbox"
++    root.mkdir()
++    approval = Mock(return_value=False)
++    subprocess_run = Mock()
++    monkeypatch.setattr("codepilot.sandbox.executor.subprocess.run", subprocess_run)
++    executor = SandboxExecutor(SandboxPolicy(root), approval_callback=approval)
++
++    result = executor.execute(
++        ["git", "push", "origin", "main"],
++        working_directory=root,
++    )
++
++    assert result.status == CommandStatus.REQUIRES_APPROVAL
++    assert "not granted" in result.reason.lower()
++    subprocess_run.assert_not_called()
++
++
++def test_git_push_is_not_executed_when_approval_callback_raises(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    """Approval callback errors fail closed."""
++    root = tmp_path / "sandbox"
++    root.mkdir()
++    approval = Mock(side_effect=RuntimeError("TUI unavailable"))
++    subprocess_run = Mock()
++    monkeypatch.setattr("codepilot.sandbox.executor.subprocess.run", subprocess_run)
++    executor = SandboxExecutor(SandboxPolicy(root), approval_callback=approval)
++
++    result = executor.execute(
++        ["git", "push", "origin", "main"],
++        working_directory=root,
++    )
++
++    assert result.status == CommandStatus.REQUIRES_APPROVAL
++    assert "callback failed" in result.reason.lower()
++    subprocess_run.assert_not_called()
+diff --git a/tests/unit/test_sandbox_policy.py b/tests/unit/test_sandbox_policy.py
+index e2e2fbe..8f91e88 100644
+--- a/tests/unit/test_sandbox_policy.py
++++ b/tests/unit/test_sandbox_policy.py
+@@ -17,6 +17,28 @@ def sandbox(tmp_path: Path) -> tuple[SandboxPolicy, Path]:
+     return SandboxPolicy(root), root
+ 
+ 
++@pytest.mark.parametrize(
++    "command",
++    [
++        ["git", "push", "origin", "main"],
++        ["git", "-C", "repo", "push", "origin", "main"],
++        ["git", "--git-dir=.git", "push", "origin", "main"],
++        ["git", "-c", "credential.helper=store", "push", "origin", "main"],
++        [r"C:\Program Files\Git\cmd\git.exe", "push", "origin", "main"],
++    ],
++)
++def test_requires_approval_for_git_push_with_global_options(
++    sandbox: tuple[SandboxPolicy, Path],
++    command: list[str],
++) -> None:
++    """Git global options must not bypass the push approval gate."""
++    policy, root = sandbox
++
++    result = policy.check_command(command, working_directory=root)
++
++    assert result.decision == SecurityDecision.REQUIRES_APPROVAL
++
++
+ @pytest.mark.parametrize(
+     "filename",
+     [
+diff --git a/tests/unit/test_tui_app.py b/tests/unit/test_tui_app.py
+index c4de985..0c9395e 100644
+--- a/tests/unit/test_tui_app.py
++++ b/tests/unit/test_tui_app.py
+@@ -12,9 +12,9 @@ from codepilot.tui.app import CodePilotApp, LogsScreen
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_dashboard_has_four_required_panels() -> None:
++async def test_dashboard_has_four_required_panels_with_uniform_dimensions() -> None:
+     app = CodePilotApp()
+-    async with app.run_test() as pilot:
++    async with app.run_test(size=(120, 40)) as pilot:
+         assert app.query_one("#issues-content", Static)
+         assert app.query_one("#task-content", Static)
+         assert app.query_one("#agent-log", RichLog)
+@@ -22,6 +22,15 @@ async def test_dashboard_has_four_required_panels() -> None:
+         assert app.query_one("#approval-command", Input).disabled
+         await pilot.pause()
+ 
++        issue_panel = app.query_one("#issues-panel")
++        task_panel = app.query_one("#task-panel")
++        logs_panel = app.query_one("#logs-panel")
++        approval_panel = app.query_one("#approval-panel")
++        assert issue_panel.size.width == task_panel.size.width
++        assert logs_panel.size.width == approval_panel.size.width
++        assert issue_panel.size.height == logs_panel.size.height
++        assert task_panel.size.height == approval_panel.size.height
++
+ 
+ @pytest.mark.asyncio
+ async def test_issue_task_and_agent_log_updates_render() -> None:
+@@ -75,13 +84,39 @@ async def test_approval_requires_explicit_approve_or_reject() -> None:
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_new_task_shortcut_opens_input_modal() -> None:
++async def test_new_task_shortcut_opens_multiline_task_modal() -> None:
+     app = CodePilotApp()
+     async with app.run_test() as pilot:
+         await pilot.press("i")
+         await pilot.pause()
+         assert app.screen.__class__.__name__ == "NewTaskScreen"
+-        assert app.screen.query_one("#task-input", Input)
++        assert app.screen.query_one("#task-input", TextArea)
++
++
++@pytest.mark.asyncio
++async def test_direct_task_accepts_multiline_input_in_one_submission() -> None:
++    submitted: list[str] = []
++
++    async def task_handler(task: str) -> str:
++        submitted.append(task)
++        return "Task was received."
++
++    app = CodePilotApp(task_handler=task_handler)
++    task_text = (
++        "Fix src/calculator.py.\n"
++        "Keep tests unchanged.\n"
++        "Run the test suite.\n"
++        "Show the proposed diff."
++    )
++
++    async with app.run_test() as pilot:
++        await pilot.press("i")
++        await pilot.pause()
++        app.screen.query_one("#task-input", TextArea).text = task_text
++        await pilot.press("ctrl+enter")
++        await pilot.pause(0.1)
++
++        assert submitted == [task_text]
+ 
+ 
+ @pytest.mark.asyncio

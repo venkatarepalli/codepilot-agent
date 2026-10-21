@@ -28,8 +28,13 @@ from codepilot.config.settings import ConfigurationError, Settings
 from codepilot.github.client import GitHubClient
 from codepilot.github.models import GitHubIssue
 from codepilot.github.polling import GitHubPollingService
-from codepilot.github.pr_workflow import HumanApprovalRejectedError, PullRequestWorkflow
+from codepilot.github.pr_workflow import (
+    HumanApprovalRejectedError,
+    PullRequestWorkflow,
+    build_structured_commit_message,
+)
 from codepilot.graph.lifecycle import TaskStatus, transition_task
+from codepilot.guardrails import CodePilotGuardrails, get_guardrails
 from codepilot.sandbox.execution_models import CommandStatus
 from codepilot.sandbox.executor import SandboxExecutor
 from codepilot.sandbox.models import SecurityDecision
@@ -116,7 +121,24 @@ def _request_approval(operation: str, details: Mapping[str, Any]) -> bool:
     return answer == "yes"
 
 
+class GuardrailBlockedError(RuntimeError):
+    """Raised when the NeMo input rail blocks a task before it reaches the LLM."""
+
+
 def _check_guardrail_command(
+    command_text: str,
+    *,
+    approval_callback: Callable[[str, Mapping[str, Any]], bool] | None = None,
+    guardrails: CodePilotGuardrails | None = None,
+) -> str:
+    """Run the sandbox policy check and append the NeMo input-rail verdict."""
+    result = _check_sandbox_policy_command(command_text, approval_callback=approval_callback)
+    if guardrails is None or not command_text.strip():
+        return result
+    return f"{result}\n{guardrails.check_input(command_text).describe()}"
+
+
+def _check_sandbox_policy_command(
     command_text: str,
     *,
     approval_callback: Callable[[str, Mapping[str, Any]], bool] | None = None,
@@ -309,6 +331,8 @@ class CodePilotRuntime:
         self._started = False
 
         self.client = GitHubClient(settings)
+        # NeMo Guardrails input rail: screens issue/direct-task text before the LLM.
+        self.guardrails = get_guardrails()
         self._approval_callback = self._request_approval
         self.pr_workflow = PullRequestWorkflow(
             github_client=self.client,
@@ -322,7 +346,8 @@ class CodePilotRuntime:
             Path.cwd().parent / f".{Path.cwd().name}-codepilot-workspaces"
         ).resolve()
         self.orchestrator: CodePilotOrchestrator = create_orchestrator(
-            tools=self.client.tools,
+            # LangChain GitHubToolkit, scoped to read-only tools for the root LLM.
+            tools=self.client.orchestrator_tools,
             workspace_root=self.workspace_root,
             pr_workflow=self.pr_workflow,
             repository=(f"{settings.github_repository_owner}/{settings.github_repository_name}"),
@@ -486,6 +511,25 @@ class CodePilotRuntime:
                 self._update_task(title, target.value, agent=agent)
 
             try:
+                verdict = self.guardrails.check_input(
+                    f"{issue.title}\n\n{getattr(issue, 'body', '') or ''}"
+                )
+                if verdict.blocked:
+                    with self._state_lock:
+                        self._issue_statuses[issue.number] = "BLOCKED"
+                    report_lifecycle(TaskStatus.FAILED)
+                    self._log(
+                        f"Issue #{issue.number} not sent to the LLM. {verdict.describe()}",
+                        source="Guardrails",
+                    )
+                    logger.warning(
+                        "Guardrails blocked issue #%s (rule=%s, engine=%s).",
+                        issue.number,
+                        verdict.rule,
+                        verdict.engine,
+                    )
+                    return
+
                 with tempfile.TemporaryDirectory(
                     prefix=f"codepilot-source-{issue.number}-"
                 ) as temp_dir:
@@ -531,11 +575,11 @@ class CodePilotRuntime:
                         issue_body[:180].rstrip() if issue_body else "Address the reported issue."
                     )
 
-                    commit_message = (
-                        f"fix(#{issue.number}): {commit_summary}\n\n"
-                        f"- Change: {commit_summary}\n"
-                        f"- Why: {why_summary}\n"
-                        f"- Closes #{issue.number}"
+                    commit_message = build_structured_commit_message(
+                        issue_number=issue.number,
+                        summary=commit_summary,
+                        what_changed=commit_summary,
+                        why=why_summary,
                     )
 
                     pull_request = self.orchestrator.publish_coder_result(
@@ -709,6 +753,12 @@ class CodePilotRuntime:
         if not task:
             raise ValueError("A direct coding task must not be empty.")
 
+        verdict = self.guardrails.check_input(task)
+        if verdict.blocked:
+            self._update_task(f"Direct task: {task}", "FAILED", agent="Guardrails")
+            self._log(f"Direct task not sent to the LLM. {verdict.describe()}", source="Guardrails")
+            raise GuardrailBlockedError(verdict.describe())
+
         with self._task_lock:
             internal_number = self._allocate_direct_task_number()
             issue = GitHubIssue(
@@ -766,6 +816,7 @@ class CodePilotRuntime:
             _check_guardrail_command,
             command,
             approval_callback=self._request_approval,
+            guardrails=self.guardrails,
         )
 
 

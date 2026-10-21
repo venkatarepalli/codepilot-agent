@@ -1,0 +1,10 @@
+# Colang 1.0 input rail for CodePilot.
+
+define flow codepilot input policy
+  $verdict = execute codepilot_input_policy_check(text=$user_message)
+  if $verdict["blocked"]
+    bot refuse unsafe codepilot task
+    stop
+
+define bot refuse unsafe codepilot task
+  "CODEPILOT_GUARDRAIL_BLOCKED"

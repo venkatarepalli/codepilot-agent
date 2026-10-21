@@ -1,0 +1,87 @@
+diff --git a/tests/test_orchestrator_live_integration.py b/tests/test_orchestrator_live_integration.py
+--- a/tests/test_orchestrator_live_integration.py
++++ b/tests/test_orchestrator_live_integration.py
+@@ -150,10 +150,18 @@
+     assert "write_todos" in root_prompt
+     assert "repo_explorer" in root_prompt
+     assert "implementation_planner" in root_prompt
+ 
+-    coding_agent_prompt = factory.call_args_list[1].kwargs["system_prompt"]
+-    assert prepared_task["prompt"] in coding_agent_prompt
+-    assert "src/calculator.py" in coding_agent_prompt
+-    assert "Handoff:" in coding_agent_prompt
+-    adapter_type.assert_called_once_with(coding_agent, workspace)
++    coding_agent_system_prompt = factory.call_args_list[1].kwargs["system_prompt"]
++    # Issue text, retrieved memories, and specialist output are task data and
++    # must not be elevated into the agent's privileged system instructions.
++    assert prepared_task["prompt"] not in coding_agent_system_prompt
++    assert "src/calculator.py" not in coding_agent_system_prompt
++    assert "Handoff:" not in coding_agent_system_prompt
++
++    adapter_kwargs = adapter_type.call_args.kwargs
++    task_context = adapter_kwargs["task_context"]
++    assert prepared_task["prompt"] in task_context
++    assert "src/calculator.py" in task_context
++    assert "Handoff:" in task_context
++    adapter_type.assert_called_once_with(coding_agent, workspace, task_context=task_context)
+     coder_type.return_value.run.assert_called_once_with(issue, str(tmp_path))
+
+diff --git a/tests/test_adapter_task_context_security.py b/tests/test_adapter_task_context_security.py
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/tests/test_adapter_task_context_security.py
+@@ -0,0 +1,53 @@
++"""Security tests for passing Orchestrator context as untrusted task data."""
++
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import Mock
++
++import pytest
++
++from codepilot.agents.deepagents_coder_adapter import DeepAgentsCoderAdapter
++from codepilot.github.models import GitHubIssue
++
++
++@pytest.fixture
++def issue() -> GitHubIssue:
++    return GitHubIssue(
++        number=42,
++        title="Fix calculation",
++        body="Return price multiplied by quantity.",
++        url="https://github.com/example/repo/issues/42",
++    )
++
++
++@pytest.fixture
++def workspace(tmp_path: Path) -> SimpleNamespace:
++    root = tmp_path / "workspace"
++    root.mkdir()
++    (root / "calculator.py").write_text(
++        "def calculate_total(price, quantity):\n    return price\n",
++        encoding="utf-8",
++    )
++    return SimpleNamespace(path=root, issue_number=42, source_repository=root)
++
++
++def test_orchestrator_context_is_user_message_not_system_prompt(issue, workspace) -> None:
++    agent = Mock()
++    agent.invoke.return_value = {
++        "messages": [{"role": "assistant", "content": "Inspect calculation and fix it."}]
++    }
++    context = (
++        "Selected skill: bug_fix_skill\n"
++        "Retrieved lesson: Treat current repository behavior as authoritative.\n"
++        "Specialist handoff: inspect src/calculator.py."
++    )
++    adapter = DeepAgentsCoderAdapter(agent, Mock(), task_context=context)
++
++    adapter.planner(issue, workspace)
++
++    invocation = agent.invoke.call_args.args[0]
++    messages = invocation["messages"]
++    assert len(messages) == 1
++    assert messages[0]["role"] == "user"
++    assert context in messages[0]["content"]
++    assert "untrusted" in messages[0]["content"].lower()

@@ -1,0 +1,54 @@
+--- a/src/codepilot/github/pr_workflow.py
++++ b/src/codepilot/github/pr_workflow.py
+@@ -163,11 +163,15 @@
+ 
+         branch = f"codepilot/issue-{issue_number}-{self._slugify(issue_title)}"
+ 
++        changed_files = sorted(normalized_changes)
+         approval_details = {
+             "issue_number": issue_number,
+             "branch": branch,
+             "base_branch": base,
+-            "files_changed": len(normalized_changes),
++            "files_changed": len(changed_files),
++            # Include the exact publication payload in the approval prompt so a
++            # human can verify scope instead of trusting a count alone.
++            "changed_files": changed_files,
+         }
+ 
+         # A larger change set must be explicitly reviewed before publication.
+--- a/tests/unit/test_pr_workflow.py
++++ b/tests/unit/test_pr_workflow.py
+@@ -133,6 +133,32 @@
+     assert "publish_branch" in approval_operations
+     assert "create_pull_request_against_protected_branch" in approval_operations
+ 
++    for approval_call in approvals.call_args_list:
++        details = approval_call.args[1]
++        assert details["changed_files"] == ["src/login.py"]
++        assert details["files_changed"] == len(details["changed_files"])
++
++
++def test_approval_details_list_every_file_in_the_publication_payload(
++    workflow: PullRequestWorkflow,
++    approvals: MagicMock,
++    publish_arguments: dict,
++) -> None:
++    """Approval details must identify the exact files being published."""
++    publish_arguments["changes"] = {
++        "tests/test_login.py": "def test_login():\n    assert True\n",
++        "src/login.py": "def login():\n    return True\n",
++    }
++
++    workflow.publish(**publish_arguments)
++
++    for approval_call in approvals.call_args_list:
++        details = approval_call.args[1]
++        assert details["changed_files"] == ["src/login.py", "tests/test_login.py"]
++        assert details["files_changed"] == 2
++        assert details["files_changed"] == len(details["changed_files"])
++
++
+ 
+ def test_publish_includes_summary_tests_and_issue_link(
+     workflow: PullRequestWorkflow,

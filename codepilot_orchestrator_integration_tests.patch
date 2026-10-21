@@ -1,0 +1,194 @@
+diff --git a/tests/test_orchestrator_live_integration.py b/tests/test_orchestrator_live_integration.py
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/tests/test_orchestrator_live_integration.py
+@@ -0,0 +1,188 @@
++"""Acceptance tests for the live DeepAgents orchestrator integration."""
++
++from pathlib import Path
++from unittest.mock import MagicMock, Mock, patch
++
++import pytest
++
++from codepilot.agents.coder_models import CoderResult, CoderStatus
++from codepilot.agents.orchestrator import CodePilotOrchestrator
++from codepilot.github.models import GitHubIssue
++
++
++@pytest.fixture
++def issue() -> GitHubIssue:
++    return GitHubIssue(
++        number=42,
++        title="Fix calculation",
++        body="Return price multiplied by quantity.",
++        url="https://github.com/example/repo/issues/42",
++        reporter="reporter",
++    )
++
++
++def _delegated_response() -> dict[str, object]:
++    """Model an observed root-agent run that uses todos and both specialist agents."""
++    return {
++        "messages": [
++            {
++                "role": "assistant",
++                "tool_calls": [
++                    {"name": "write_todos", "args": {"todos": ["Explore", "Plan"]}}
++                ],
++                "content": "",
++            },
++            {"role": "tool", "name": "write_todos", "content": "Todos updated"},
++            {
++                "role": "assistant",
++                "tool_calls": [
++                    {
++                        "name": "task",
++                        "args": {
++                            "name": "repo_explorer",
++                            "task": "Identify relevant paths from the provided repository summaries.",
++                        },
++                    }
++                ],
++                "content": "",
++            },
++            {
++                "role": "tool",
++                "name": "task",
++                "content": "Relevant path: src/calculator.py",
++            },
++            {
++                "role": "assistant",
++                "tool_calls": [
++                    {
++                        "name": "task",
++                        "args": {
++                            "name": "implementation_planner",
++                            "task": "Propose a small, testable change using the explorer findings.",
++                        },
++                    }
++                ],
++                "content": "",
++            },
++            {
++                "role": "tool",
++                "name": "task",
++                "content": "Plan: multiply price by quantity and run focused tests.",
++            },
++            {
++                "role": "assistant",
++                "content": (
++                    "Handoff: inspect src/calculator.py, multiply price by quantity, "
++                    "and verify with focused tests."
++                ),
++            },
++        ]
++    }
++
++
++def _make_orchestrator(
++    *,
++    root_agent: MagicMock,
++    coding_agent: MagicMock,
++    workspace: Mock,
++    agent_factory: MagicMock,
++) -> CodePilotOrchestrator:
++    agent_factory.side_effect = [root_agent, coding_agent]
++    return CodePilotOrchestrator(
++        model="test-model",
++        agent_factory=agent_factory,
++        coder_workspace=workspace,
++        test_command=("pytest", "-q"),
++    )
++
++
++def test_root_agent_is_configured_with_named_specialists() -> None:
++    root_agent = MagicMock()
++    factory = MagicMock(return_value=root_agent)
++
++    CodePilotOrchestrator(model="test-model", agent_factory=factory)
++
++    root_kwargs = factory.call_args.kwargs
++    specialists = {item["name"] for item in root_kwargs.get("subagents", [])}
++    assert {"repo_explorer", "implementation_planner"} <= specialists
++    assert "write_todos" in root_kwargs["system_prompt"]
++    assert "task" in root_kwargs["system_prompt"]
++
++
++def test_live_coding_path_uses_prepared_task_and_root_handoff(
++    issue: GitHubIssue, tmp_path: Path
++) -> None:
++    root_agent = MagicMock()
++    root_agent.invoke.return_value = _delegated_response()
++    coding_agent = MagicMock()
++    workspace = Mock()
++    factory = MagicMock()
++    orchestrator = _make_orchestrator(
++        root_agent=root_agent,
++        coding_agent=coding_agent,
++        workspace=workspace,
++        agent_factory=factory,
++    )
++    prepared_task = {
++        "prompt": "PREPARED_TASK_SENTINEL: skill and retrieved context",
++        "category": "bug_fix",
++    }
++    orchestrator.prepare_task = Mock(return_value=prepared_task)  # type: ignore[method-assign]
++    expected = CoderResult(
++        status=CoderStatus.FAILED,
++        issue_number=issue.number,
++        workspace=Mock(),
++        plan="",
++        attempts=0,
++        error="test sentinel",
++    )
++
++    with (
++        patch("codepilot.agents.orchestrator.DeepAgentsCoderAdapter") as adapter_type,
++        patch("codepilot.agents.orchestrator.CoderAgent") as coder_type,
++    ):
++        coder_type.return_value.run.return_value = expected
++        result = orchestrator.run_coding_task(issue, str(tmp_path))
++
++    assert result is expected
++    orchestrator.prepare_task.assert_called_once_with(issue)
++    root_agent.invoke.assert_called_once()
++    root_prompt = root_agent.invoke.call_args.args[0]["messages"][0]["content"]
++    assert prepared_task["prompt"] in root_prompt
++    assert "write_todos" in root_prompt
++    assert "repo_explorer" in root_prompt
++    assert "implementation_planner" in root_prompt
++
++    coding_agent_prompt = factory.call_args_list[1].kwargs["system_prompt"]
++    assert prepared_task["prompt"] in coding_agent_prompt
++    assert "src/calculator.py" in coding_agent_prompt
++    assert "Handoff:" in coding_agent_prompt
++    adapter_type.assert_called_once_with(coding_agent, workspace)
++    coder_type.return_value.run.assert_called_once_with(issue, str(tmp_path))
++
++
++def test_live_coding_path_fails_closed_without_real_delegation(
++    issue: GitHubIssue, tmp_path: Path
++) -> None:
++    root_agent = MagicMock()
++    root_agent.invoke.return_value = {
++        "messages": [{"role": "assistant", "content": "I will fix it directly."}]
++    }
++    coding_agent = MagicMock()
++    workspace = Mock()
++    factory = MagicMock()
++    orchestrator = _make_orchestrator(
++        root_agent=root_agent,
++        coding_agent=coding_agent,
++        workspace=workspace,
++        agent_factory=factory,
++    )
++    orchestrator.prepare_task = Mock(  # type: ignore[method-assign]
++        return_value={"prompt": "Prepared issue prompt", "category": "bug_fix"}
++    )
++
++    with pytest.raises(RuntimeError, match="required DeepAgents delegation"):
++        orchestrator.run_coding_task(issue, str(tmp_path))
++
++    root_agent.invoke.assert_called_once()
++    assert factory.call_count == 1  # no separate coding agent is created after failed delegation

@@ -1,0 +1,105 @@
+diff --git a/tests/unit/test_guardrail_check.py b/tests/unit/test_guardrail_check.py
+new file mode 100644
+index 0000000..6c16179
+--- /dev/null
++++ b/tests/unit/test_guardrail_check.py
+@@ -0,0 +1,56 @@
++"""Tests for the non-executing sandbox guardrail preview."""
++
++from codepilot import runner
++
++
++def _checker():
++    checker = getattr(runner, "_check_guardrail_command", None)
++    assert callable(checker), "guardrail preview helper has not been implemented"
++    return checker
++
++
++def test_curl_is_blocked_without_launching_a_subprocess(monkeypatch) -> None:
++    """The prohibited command is rejected by policy before any process launch."""
++    def must_not_launch(*args, **kwargs):
++        raise AssertionError("guardrail preview must never launch a subprocess")
++
++    monkeypatch.setattr("codepilot.sandbox.executor.subprocess.run", must_not_launch)
++
++    result = _checker()("curl https://example.com")
++
++    assert "BLOCKED" in result
++    assert "curl" in result.lower()
++    assert "no subprocess was launched" in result.lower()
++
++
++def test_allowed_command_is_reported_but_never_executed(monkeypatch) -> None:
++    """The guardrail UI is a policy preview, not a general-purpose shell."""
++    def must_not_launch(*args, **kwargs):
++        raise AssertionError("guardrail preview must never launch a subprocess")
++
++    monkeypatch.setattr("codepilot.sandbox.executor.subprocess.run", must_not_launch)
++
++    result = _checker()("python --version")
++
++    assert "allows" in result.lower()
++    assert "not executed" in result.lower()
++
++
++def test_approval_required_command_uses_hitl_but_is_not_executed(monkeypatch) -> None:
++    """Approval is surfaced through HITL, but preview mode still never runs it."""
++    def must_not_launch(*args, **kwargs):
++        raise AssertionError("guardrail preview must never launch a subprocess")
++
++    monkeypatch.setattr("codepilot.sandbox.executor.subprocess.run", must_not_launch)
++    requests = []
++
++    def approve(operation, details):
++        requests.append((operation, details))
++        return True
++
++    result = _checker()("git push origin main", approval_callback=approve)
++
++    assert requests
++    assert requests[0][0] == "execute_command_requires_approval"
++    assert "approval granted" in result.lower()
++    assert "not executed" in result.lower()
+diff --git a/tests/unit/test_guardrail_tui.py b/tests/unit/test_guardrail_tui.py
+new file mode 100644
+index 0000000..d78da2c
+--- /dev/null
++++ b/tests/unit/test_guardrail_tui.py
+@@ -0,0 +1,37 @@
++"""TUI integration tests for the safe guardrail-check interaction."""
++
++import pytest
++from textual.widgets import RichLog, TextArea
++
++from codepilot.tui.app import CodePilotApp
++
++
++@pytest.mark.asyncio
++async def test_guardrail_shortcut_checks_default_command_without_running_it() -> None:
++    received = []
++
++    async def guardrail_handler(command: str) -> str:
++        received.append(command)
++        return (
++            "GUARDRAIL BLOCKED\n"
++            "Command: curl https://example.com\n"
++            "Reason: The command 'curl' is prohibited.\n"
++            "No subprocess was launched."
++        )
++
++    app = CodePilotApp(guardrail_handler=guardrail_handler)
++    async with app.run_test(size=(120, 40)) as pilot:
++        await pilot.press("g")
++        await pilot.pause()
++
++        assert app.screen.__class__.__name__ == "GuardrailCheckScreen"
++        command_input = app.screen.query_one("#guardrail-input", TextArea)
++        assert command_input.text == "curl https://example.com"
++
++        await pilot.press("ctrl+enter")
++        await pilot.pause(0.2)
++
++        assert received == ["curl https://example.com"]
++        log_text = str(app.query_one("#agent-log", RichLog).lines)
++        assert "GUARDRAIL BLOCKED" in log_text
++        assert "No subprocess was launched." in log_text

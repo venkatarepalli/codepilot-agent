@@ -342,3 +342,66 @@ def test_implementer_receives_previous_failed_test_result(
     assert implementer.call_args_list[0].args[4] is None
     assert implementer.call_args_list[1].args[3] == 2
     assert implementer.call_args_list[1].args[4] == failed_result
+
+
+def test_retry_gate_counts_failed_test_runs_not_attempts(
+    workspace_manager: Mock,
+    test_agent: Mock,
+    issue: GitHubIssue,
+    workspace_info: WorkspaceInfo,
+) -> None:
+    """An empty change set (no test run) must not count toward the HITL gate."""
+    implementer = Mock(
+        side_effect=[ValueError("DeepAgents returned an empty change set"), None, None]
+    )
+    test_agent.run.side_effect = [
+        make_test_result(TestStatus.FAILED, attempt=2, command_result=failed_command_result()),
+        make_test_result(TestStatus.PASSED, attempt=3, command_result=successful_command_result()),
+    ]
+    approval = Mock(return_value=False)
+    agent = CoderAgent(
+        workspace_manager,
+        planner=lambda issue, workspace: "Plan",
+        implementer=implementer,
+        test_command=("pytest", "-q"),
+        test_agent=test_agent,
+        approval_callback=approval,
+    )
+
+    result = agent.run(issue, workspace_info.source_repository)
+
+    # Only one failed test run happened, so no approval was needed.
+    approval.assert_not_called()
+    assert result.status == CoderStatus.SUCCEEDED
+    assert result.attempts == 3
+
+
+def test_retry_gate_not_requested_when_no_attempt_remains(
+    workspace_manager: Mock,
+    test_agent: Mock,
+    issue: GitHubIssue,
+    workspace_info: WorkspaceInfo,
+) -> None:
+    """Second failed run on the final attempt has nothing to approve."""
+    implementer = Mock(
+        side_effect=[ValueError("DeepAgents returned an empty change set"), None, None]
+    )
+    test_agent.run.side_effect = [
+        make_test_result(TestStatus.FAILED, attempt=2, command_result=failed_command_result()),
+        make_test_result(TestStatus.FAILED, attempt=3, command_result=failed_command_result()),
+    ]
+    approval = Mock(return_value=True)
+    agent = CoderAgent(
+        workspace_manager,
+        planner=lambda issue, workspace: "Plan",
+        implementer=implementer,
+        test_command=("pytest", "-q"),
+        test_agent=test_agent,
+        approval_callback=approval,
+    )
+
+    result = agent.run(issue, workspace_info.source_repository)
+
+    approval.assert_not_called()
+    assert result.status == CoderStatus.FAILED
+    assert "3 implementation attempts" in result.error

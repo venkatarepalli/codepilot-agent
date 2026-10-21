@@ -85,12 +85,12 @@ The TUI and runtime communicate through callbacks. Polling and coding work run a
 |---|---|---|
 | Agent framework | DeepAgents | Used by orchestrator and coder adapter |
 | Model integration | LangChain Google GenAI / OpenAI | Factory implemented; verify selected provider credentials/model |
-| GitHub integration | PyGithub + project GitHub client | Implemented component; see tests |
-| Sandbox | Custom workspace policy and executor | Implemented component; see tests |
+| GitHub integration | LangChain `GitHubToolkit` (read-only tools bound to the Orchestrator) + PyGithub for HITL-gated publication | Implemented; see `tests/unit/test_github_toolkit_wiring.py` |
+| Sandbox | CodePilot workspace copy + `SandboxPolicy` (justified substitution S-1 for the DeepAgents local sandbox backend) | Implemented; see [`docs/tool-substitutions.md`](docs/tool-substitutions.md) |
 | Episodic memory | Project-managed task history | Implemented component; see tests |
 | Semantic memory | ChromaDB | Implemented component; requires runtime initialization |
 | TUI | Textual | Default runner entry point; runtime integration and approval bridge implemented, interactive end-to-end verification pending |
-| Guardrails | Custom Python policies and approval callbacks | Implemented in components; see requirement matrix |
+| Guardrails | NeMo Guardrails input rail + custom Python sandbox policy + HITL approval gates | Implemented; see [`docs/guardrails.md`](docs/guardrails.md) |
 
 Dependency ranges are declared in `pyproject.toml`. Python 3.11, 3.12, and 3.13 are supported by the declared Python range; Python 3.14 is not supported.
 
@@ -289,7 +289,16 @@ See [`docs/troubleshooting.md`](docs/troubleshooting.md) and [`docs/engineering-
 
 CodePilot must prevent unsafe operations in the sandbox and require human approval for defined high-risk actions.
 
-Sandbox policy and execution behavior are implemented in `src/codepilot/sandbox/policy.py` and `src/codepilot/sandbox/executor.py`; focused coverage is in `tests/unit/test_sandbox_policy.py` and `tests/unit/test_sandbox_executor.py`. GitHub write approval is handled by `PullRequestWorkflow`. Retry approval is covered by `tests/unit/test_coder_agent_test_integration.py`.
+Guardrails are layered, and every layer fails closed:
+
+1. **NeMo Guardrails input rail** (`src/codepilot/guardrails/`): screens every issue and direct task *before* the LLM sees it. Blocks prompt injection, secret exfiltration, destructive shell requests, protected-file edits and approval bypass. It runs without an LLM, so it is deterministic.
+2. **GitHubToolkit scoping**: the Orchestrator LLM only gets read-only toolkit tools; `Delete File`, `Create Pull Request` and the other write tools are never bound to it.
+3. **Sandbox policy** (`src/codepilot/sandbox/policy.py`): blocks `rm -rf`, `curl`, `wget`, `pip install`, paths outside the sandbox, and `.env`/`*.pem`/`*.key`/`*.secret`/`*credentials*` writes.
+4. **HITL gates** in the TUI approval panel: PR to `main`/`master`, commit touching more than 5 files, `git push`, retry after 2 failed test runs.
+
+PR conventions are enforced in `PullRequestWorkflow.publish`: branch `codepilot/issue-{n}-{slug}`, title `[CodePilot] {issue title}`, and the commit format `fix(#n): …` / `- Change` / `- Why` / `- Closes #n`.
+
+See [`docs/guardrails.md`](docs/guardrails.md).
 
 ## Memory
 
@@ -319,7 +328,9 @@ See [`docs/design-decisions.md`](docs/design-decisions.md) and [`docs/adr/`](doc
 
 ## Tool Substitutions
 
-If any assignment-specified tool or technology is replaced, the substitution will be explicitly documented with:
+**S-1 (Component 3):** the DeepAgents local sandbox backend is replaced by a per-issue workspace copy plus a declarative `SandboxPolicy`. `LocalShellBackend` executes on the host with no command filtering, and DeepAgents permissions cover file tools only, so neither can express the required command block-list. Auto-summarization is *not* a substitution: DeepAgents 0.7 enables it on every agent, and `tests/unit/test_orchestrator_summarization.py` verifies that.
+
+Each substitution is documented with:
 
 - assignment requirement
 - original technology

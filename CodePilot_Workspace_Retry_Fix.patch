@@ -1,0 +1,137 @@
+diff --git a/src/codepilot/sandbox/workspace.py b/src/codepilot/sandbox/workspace.py
+index e2a00fa..32cdb90 100644
+--- a/src/codepilot/sandbox/workspace.py
++++ b/src/codepilot/sandbox/workspace.py
+@@ -2,9 +2,9 @@
+ 
+ import os
+ import shutil
+-import tempfile
+ from dataclasses import dataclass
+ from pathlib import Path
++from uuid import uuid4
+ 
+ _DEFAULT_EXCLUDED_DIRECTORIES = frozenset(
+     {
+@@ -72,25 +72,31 @@ class WorkspaceManager:
+         if self._is_within(source, self.workspace_root):
+             raise ValueError("The source repository cannot be inside the workspace root.")
+ 
+-        workspace_path = self.workspace_root / f"issue-{issue_number}"
+-
+-        if workspace_path.exists():
+-            raise FileExistsError(f"Workspace already exists for issue {issue_number}.")
++        base_workspace_path = self.workspace_root / f"issue-{issue_number}"
++
++        # Claim a distinct directory atomically. The first attempt keeps the
++        # familiar issue-N name; retries get a UUID suffix, preserving earlier
++        # workspaces and avoiding a check-then-rename overwrite race.
++        while True:
++            if not base_workspace_path.exists():
++                workspace_path = base_workspace_path
++            else:
++                workspace_path = self.workspace_root / (
++                    f"issue-{issue_number}-run-{uuid4().hex}"
++                )
+ 
+-        staging_path = Path(
+-            tempfile.mkdtemp(
+-                prefix=f".issue-{issue_number}-",
+-                dir=self.workspace_root,
+-            )
+-        )
++            try:
++                workspace_path.mkdir()
++            except FileExistsError:
++                # Another worker may have claimed the same candidate; retry
++                # with a fresh candidate rather than reuse or overwrite it.
++                continue
++            break
+ 
+         try:
+-            self._copy_repository(source, staging_path)
+-
+-            staging_path.rename(workspace_path)
+-
++            self._copy_repository(source, workspace_path)
+         except Exception:
+-            shutil.rmtree(staging_path, ignore_errors=True)
++            shutil.rmtree(workspace_path, ignore_errors=True)
+             raise
+ 
+         return WorkspaceInfo(
+@@ -283,8 +289,17 @@ class WorkspaceManager:
+             raise ValueError("A task workspace cannot be the workspace root.")
+ 
+         expected_name = f"issue-{workspace.issue_number}"
++        retry_prefix = f"{expected_name}-run-"
++        retry_id = (
++            resolved.name[len(retry_prefix) :]
++            if resolved.name.startswith(retry_prefix)
++            else ""
++        )
++        is_retry_workspace = len(retry_id) == 32 and all(
++            character in "0123456789abcdef" for character in retry_id
++        )
+ 
+-        if resolved.name != expected_name:
++        if resolved.name != expected_name and not is_retry_workspace:
+             raise ValueError("Workspace metadata does not match its path.")
+ 
+         if not resolved.is_dir():
+diff --git a/tests/unit/test_sandbox_workspace.py b/tests/unit/test_sandbox_workspace.py
+index 187f07b..e909f88 100644
+--- a/tests/unit/test_sandbox_workspace.py
++++ b/tests/unit/test_sandbox_workspace.py
+@@ -65,15 +65,46 @@ def test_excludes_git_metadata_and_secrets(workspace) -> None:
+     assert not (workspace.path / "credentials.json").exists()
+ 
+ 
+-def test_rejects_duplicate_workspace(
++def test_repeated_issue_gets_isolated_workspace_without_overwriting_previous(
+     manager: WorkspaceManager,
+     repository: Path,
+ ) -> None:
+-    """An existing issue workspace must not be overwritten."""
+-    manager.create_workspace(repository, 123)
++    """Retrying an issue preserves its old workspace and creates a fresh copy."""
++    first = manager.create_workspace(repository, 123)
++    manager.write_file(first, "app.py", "first attempt's working change\n")
+ 
+-    with pytest.raises(FileExistsError):
+-        manager.create_workspace(repository, 123)
++    second = manager.create_workspace(repository, 123)
++
++    assert first.path != second.path
++    assert first.path.name == "issue-123"
++    assert second.path.name.startswith("issue-123-run-")
++    assert manager.read_file(first, "app.py") == "first attempt's working change\n"
++    assert manager.read_file(second, "app.py") == "print('hello')\n"
++    assert manager.get_changes(first)["modified"] == ["app.py"]
++    assert manager.get_changes(second) == {"added": [], "modified": [], "deleted": []}
++
++    manager.cleanup(second)
++    assert not second.path.exists()
++    assert first.path.is_dir()
++
++
++def test_rejects_workspace_metadata_with_invalid_retry_suffix(
++    manager: WorkspaceManager,
++    repository: Path,
++) -> None:
++    """Retry workspace names must use the expected issue prefix and UUID form."""
++    from codepilot.sandbox.workspace import WorkspaceInfo
++
++    retry_path = manager.workspace_root / "issue-123-run-not-a-uuid"
++    retry_path.mkdir()
++    forged = WorkspaceInfo(
++        issue_number=123,
++        path=retry_path,
++        source_repository=repository,
++    )
++
++    with pytest.raises(ValueError, match="does not match its path"):
++        manager.read_file(forged, "app.py")
+ 
+ 
+ def test_rejects_invalid_issue_number(

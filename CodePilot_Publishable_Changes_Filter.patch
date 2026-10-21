@@ -1,0 +1,173 @@
+diff --git a/src/codepilot/agents/orchestrator.py b/src/codepilot/agents/orchestrator.py
+index ebbf570..936ed5f 100644
+--- a/src/codepilot/agents/orchestrator.py
++++ b/src/codepilot/agents/orchestrator.py
+@@ -55,6 +55,33 @@ Request human approval whenever the applicable policy requires it.
+ class CodePilotOrchestrator:
+     """Coordinate issue classification, context assembly, and task execution."""
+ 
++    _NON_PUBLISHABLE_WORKSPACE_DIRECTORIES = frozenset(
++        {
++            ".git",
++            ".venv",
++            "venv",
++            "__pycache__",
++            ".pytest_cache",
++            ".mypy_cache",
++            ".ruff_cache",
++            ".tox",
++            "node_modules",
++            "dist",
++            "build",
++            # CodePilot-owned artifacts such as proposed_diff.txt live here.
++            "working",
++        }
++    )
++
++    @classmethod
++    def _is_internal_workspace_artifact(cls, relative_path: str) -> bool:
++        """Return whether a workspace path is generated or otherwise non-publishable."""
++        normalized = relative_path.replace("\\", "/")
++        return any(
++            part.casefold() in cls._NON_PUBLISHABLE_WORKSPACE_DIRECTORIES
++            for part in normalized.split("/")
++        )
++
+     def __init__(
+         self,
+         *,
+@@ -238,7 +265,19 @@ class CodePilotOrchestrator:
+             raise ValueError("Cannot publish changes without a successful test result.")
+ 
+         workspace = result.workspace
+-        changes_by_type = self._coder_workspace.get_changes(workspace)
++        detected_changes = self._coder_workspace.get_changes(workspace)
++
++        # The task workspace contains both repository content and CodePilot-owned
++        # artifacts (for example, working/proposed_diff.txt). Only repository
++        # files may be included in the PR payload or in its human-approval count.
++        changes_by_type = {
++            change_type: [
++                path
++                for path in detected_changes[change_type]
++                if not self._is_internal_workspace_artifact(path)
++            ]
++            for change_type in ("added", "modified", "deleted")
++        }
+ 
+         if changes_by_type["deleted"]:
+             raise NotImplementedError(
+diff --git a/tests/unit/test_orchestrator_coder_integration.py b/tests/unit/test_orchestrator_coder_integration.py
+index 405ccad..3eb23c1 100644
+--- a/tests/unit/test_orchestrator_coder_integration.py
++++ b/tests/unit/test_orchestrator_coder_integration.py
+@@ -8,6 +8,7 @@ import pytest
+ from codepilot.agents.coder_models import CoderResult, CoderStatus
+ from codepilot.agents.orchestrator import CodePilotOrchestrator
+ from codepilot.github.models import GitHubIssue
++from codepilot.sandbox.execution_models import CommandExecutionResult, CommandStatus
+ 
+ 
+ @pytest.fixture
+@@ -70,3 +71,101 @@ def test_workspace_and_test_command_must_be_configured_together() -> None:
+             agent_factory=MagicMock(return_value=MagicMock()),
+             test_command=("pytest", "-q"),
+         )
++
++
++def test_publish_coder_result_excludes_internal_workspace_artifacts(
++    issue: GitHubIssue, tmp_path: Path
++) -> None:
++    """Publish only repository changes, not CodePilot-generated working files."""
++    coder_workspace = Mock()
++    coder_workspace.get_changes.return_value = {
++        "added": [
++            "working/proposed_diff.txt",
++            "working/test-output.txt",
++            ".pytest_cache/v/cache/nodeids",
++        ],
++        "modified": ["src/calculator.py"],
++        "deleted": ["working/old-diagnostic.log"],
++    }
++    calculator_content = (
++        "def calculate_total(price: float, quantity: int) -> float:\n"
++        '    """Calculate the total price for the requested quantity."""\n'
++        "    return price * quantity\n"
++    )
++    coder_workspace.read_file.return_value = calculator_content
++    pr_workflow = Mock()
++    orchestrator = CodePilotOrchestrator(
++        model="test-model",
++        agent_factory=MagicMock(return_value=MagicMock()),
++        pr_workflow=pr_workflow,
++        coder_workspace=coder_workspace,
++        test_command=("pytest", "-q"),
++    )
++    result = CoderResult(
++        status=CoderStatus.SUCCEEDED,
++        issue_number=issue.number,
++        workspace=Mock(),
++        plan="Correct the multiplication operator.",
++        attempts=1,
++        test_result=CommandExecutionResult(
++            status=CommandStatus.SUCCEEDED,
++            command=("pytest", "-q"),
++            return_code=0,
++        ),
++        diff_path=tmp_path / "working" / "proposed_diff.txt",
++    )
++
++    orchestrator.publish_coder_result(
++        issue,
++        result,
++        commit_message="fix: multiply price by quantity",
++        summary="Correct total calculation.",
++    )
++
++    coder_workspace.read_file.assert_called_once_with(result.workspace, "src/calculator.py")
++    assert pr_workflow.publish.call_args.kwargs["changes"] == {
++        "src/calculator.py": calculator_content
++    }
++
++
++def test_publish_coder_result_rejects_artifact_only_change_set(
++    issue: GitHubIssue, tmp_path: Path
++) -> None:
++    """Refuse to publish when a workspace only differs by internal artifacts."""
++    coder_workspace = Mock()
++    coder_workspace.get_changes.return_value = {
++        "added": ["working/proposed_diff.txt", "working/test-output.txt"],
++        "modified": [],
++        "deleted": [],
++    }
++    pr_workflow = Mock()
++    orchestrator = CodePilotOrchestrator(
++        model="test-model",
++        agent_factory=MagicMock(return_value=MagicMock()),
++        pr_workflow=pr_workflow,
++        coder_workspace=coder_workspace,
++        test_command=("pytest", "-q"),
++    )
++    result = CoderResult(
++        status=CoderStatus.SUCCEEDED,
++        issue_number=issue.number,
++        workspace=Mock(),
++        plan="No repository source change.",
++        attempts=1,
++        test_result=CommandExecutionResult(
++            status=CommandStatus.SUCCEEDED,
++            command=("pytest", "-q"),
++            return_code=0,
++        ),
++        diff_path=tmp_path / "working" / "proposed_diff.txt",
++    )
++
++    with pytest.raises(ValueError, match="No source-file changes were detected"):
++        orchestrator.publish_coder_result(
++            issue,
++            result,
++            commit_message="fix: test artifact filtering",
++            summary="No source changes.",
++        )
++
++    pr_workflow.publish.assert_not_called()

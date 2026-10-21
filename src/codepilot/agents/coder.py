@@ -50,6 +50,9 @@ class CoderAgent:
     """Coordinate implementation attempts inside an issue workspace."""
 
     MAX_ATTEMPTS = 3
+    # HITL gate (Component 6): retrying after this many FAILED test runs
+    # requires explicit human approval.
+    RETRY_APPROVAL_AFTER_FAILED_TEST_RUNS = 2
     ARTIFACT_DIRECTORY = "working"
     PLAN_FILENAME = "implementation_plan.md"
     DIFF_FILENAME = "proposed_diff.txt"
@@ -112,6 +115,7 @@ class CoderAgent:
 
         previous_test_assessment: TestResult | None = None
         implementation_feedback: ImplementationFeedback | None = None
+        failed_test_runs = 0
 
         for attempt in range(1, self.MAX_ATTEMPTS + 1):
             try:
@@ -222,10 +226,24 @@ class CoderAgent:
                     diff_path=diff_path,
                 )
 
-            if assessment.status == TestStatus.FAILED and attempt == 2:
+            if assessment.status == TestStatus.FAILED:
+                failed_test_runs += 1
+
+            # Count real failed test runs, not loop iterations: an empty
+            # change-set attempt never ran tests and must not trip the gate.
+            if (
+                assessment.status == TestStatus.FAILED
+                and failed_test_runs == self.RETRY_APPROVAL_AFTER_FAILED_TEST_RUNS
+                and attempt < self.MAX_ATTEMPTS
+            ):
+                logger.info(
+                    "Issue #%s: %s failed test runs; requesting human approval to retry.",
+                    issue.number,
+                    failed_test_runs,
+                )
                 approval_details = {
                     "issue_number": issue.number,
-                    "failed_test_runs": 2,
+                    "failed_test_runs": failed_test_runs,
                     "next_attempt": attempt + 1,
                     "test_summary": assessment.summary or assessment.error or "Tests failed.",
                     "workspace": str(task_workspace.path),

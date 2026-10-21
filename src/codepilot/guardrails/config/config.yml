@@ -1,0 +1,13 @@
+# NeMo Guardrails configuration for CodePilot.
+#
+# Only an INPUT rail is configured. It screens every GitHub issue (title+body)
+# and every direct TUI task BEFORE any text reaches the Orchestrator LLM.
+# The rail calls a deterministic Python action, so it needs no LLM, no API key
+# and no network, and it behaves identically in tests and in the demo.
+#
+# Execution-time rules (execute/edit_file blocking, HITL for git push) are
+# enforced separately by codepilot.sandbox.policy.SandboxPolicy.
+rails:
+  input:
+    flows:
+      - codepilot input policy

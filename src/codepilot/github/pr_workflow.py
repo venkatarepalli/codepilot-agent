@@ -13,6 +13,103 @@ from codepilot.github.client import GitHubClient
 
 ApprovalCallback = Callable[[str, Mapping[str, Any]], bool]
 
+PR_TITLE_PREFIX = "[CodePilot]"
+COMMIT_HEADER_MAX_LENGTH = 72
+_PREFIX_PATTERN = re.compile(r"^\s*\[codepilot\]\s*", re.IGNORECASE)
+_CONVENTIONAL_HEADER = re.compile(
+    r"^(?P<type>[a-z]+)(?:\([^)]*\))?!?:\s*(?P<summary>.+)$", re.IGNORECASE
+)
+
+
+def format_pull_request_title(issue_title: str) -> str:
+    """Return ``[CodePilot] {issue title}`` exactly once, whitespace-normalized."""
+    title = " ".join(issue_title.split())
+    while _PREFIX_PATTERN.match(title):
+        title = _PREFIX_PATTERN.sub("", title, count=1)
+    if not title:
+        raise ValueError("issue_title must contain text besides the CodePilot prefix.")
+    return f"{PR_TITLE_PREFIX} {title}"
+
+
+def is_structured_commit_message(message: str, issue_number: int) -> bool:
+    """Check the assignment's commit format.
+
+    fix(#{n}): {one-line summary}
+    <blank line>
+    - {what changed}
+    - {why}
+    - Closes #{n}
+    """
+    lines = message.strip("\n").splitlines()
+    if len(lines) < 5:
+        return False
+    header, blank, *body = lines
+    expected_prefix = f"fix(#{issue_number}): "
+    if not header.startswith(expected_prefix) or not header[len(expected_prefix):].strip():
+        return False
+    if len(header) > COMMIT_HEADER_MAX_LENGTH or blank.strip():
+        return False
+    bullets = [line for line in body if line.strip()]
+    if not all(line.startswith("- ") and line[2:].strip() for line in bullets):
+        return False
+    closes = f"- Closes #{issue_number}"
+    return len(bullets) >= 3 and bullets[-1].strip() == closes
+
+
+def build_structured_commit_message(
+    *,
+    issue_number: int,
+    summary: str,
+    what_changed: str,
+    why: str,
+) -> str:
+    """Build a commit message in the required ``fix(#n): ...`` format."""
+    prefix = f"fix(#{issue_number}): "
+    one_line = " ".join(summary.split()).rstrip(".") or "address issue"
+    one_line = one_line[: COMMIT_HEADER_MAX_LENGTH - len(prefix)].rstrip()
+    what = " ".join(what_changed.split()) or one_line
+    reason = " ".join(why.split()) or "Address the reported issue."
+    return (
+        f"{prefix}{one_line}\n\n"
+        f"- Change: {what}\n"
+        f"- Why: {reason}\n"
+        f"- Closes #{issue_number}"
+    )
+
+
+def enforce_structured_commit_message(
+    message: str,
+    *,
+    issue_number: int,
+    issue_title: str,
+    changed_files: list[str],
+) -> str:
+    """Return ``message`` if compliant, otherwise rebuild it in the required format.
+
+    A free-form message (e.g. from an LLM) is never committed as-is: its first
+    line becomes the summary and remaining text becomes the "why" bullet.
+    """
+    if is_structured_commit_message(message, issue_number):
+        return message.strip("\n")
+
+    lines = [line.strip() for line in message.strip().splitlines()]
+    first = lines[0] if lines else ""
+    match = _CONVENTIONAL_HEADER.match(first)
+    summary = match.group("summary") if match else first
+    summary = summary or issue_title
+    rest = " ".join(
+        line.lstrip("-* ").strip()
+        for line in lines[1:]
+        if line and not re.match(r"^[-* ]*closes\s+#\d+", line, re.IGNORECASE)
+    )
+    files = ", ".join(changed_files[:5]) + (" ..." if len(changed_files) > 5 else "")
+    return build_structured_commit_message(
+        issue_number=issue_number,
+        summary=summary,
+        what_changed=f"{summary} ({files})" if files else summary,
+        why=rest or f"Resolve issue #{issue_number}: {' '.join(issue_title.split())}",
+    )
+
 
 class PullRequestWorkflowError(RuntimeError):
     """Raised when a pull-request workflow cannot safely continue."""
@@ -169,10 +266,23 @@ class PullRequestWorkflow:
         branch = f"codepilot/issue-{issue_number}-{self._slugify(issue_title)}"
 
         changed_files = sorted(normalized_changes)
+
+        # PR conventions are enforced here, at the single publication point,
+        # so no caller (runner, orchestrator, or LLM) can bypass them.
+        pull_title = format_pull_request_title(issue_title)
+        commit_message = enforce_structured_commit_message(
+            commit_message,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            changed_files=changed_files,
+        )
+
         approval_details = {
             "issue_number": issue_number,
             "branch": branch,
             "base_branch": base,
+            "pull_request_title": pull_title,
+            "commit_message": commit_message,
             "files_changed": len(changed_files),
             # Include the exact publication payload in the approval prompt so a
             # human can verify scope instead of trusting a count alone.
@@ -240,8 +350,6 @@ class PullRequestWorkflow:
                 ref=f"refs/heads/{branch}",
                 sha=commit.sha,
             )
-
-            pull_title = f"[CodePilot] {issue_title}"
 
             pull_body = (
                 f"## Summary\n{summary}\n\n"

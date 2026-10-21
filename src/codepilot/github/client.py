@@ -17,6 +17,40 @@ logger = logging.getLogger(__name__)
 
 _CODEPILOT_ISSUE_BRANCH = re.compile(r"^codepilot/issue-(\d+)(?:-|$)", re.IGNORECASE)
 
+# GitHubToolkit tools are scoped by role using each tool's stable ``mode``.
+# The Orchestrator LLM gets read-only tools (incl. ``get_issues`` = list_issues).
+# Write tools act directly on the live remote repository, so they are never
+# handed to the LLM; branch/commit/PR creation goes through
+# PullRequestWorkflow, which enforces HITL gates and PR conventions.
+ORCHESTRATOR_READ_ONLY_MODES: frozenset[str] = frozenset(
+    {
+        "get_issues",
+        "get_issue",
+        "list_open_pull_requests",
+        "get_pull_request",
+        "list_pull_request_files",
+        "read_file",
+        "list_files_in_main_branch",
+        "list_branches_in_repo",
+        "get_files_from_directory",
+        "search_issues_and_prs",
+        "search_code",
+    }
+)
+PR_AGENT_WRITE_MODES: frozenset[str] = frozenset(
+    {
+        "create_branch",
+        "create_file",
+        "update_file",
+        "create_pull_request",
+        "create_review_request",
+    }
+)
+# Never exposed to any agent: destructive or mutates shared wrapper state.
+BLOCKED_TOOLKIT_MODES: frozenset[str] = frozenset(
+    {"delete_file", "set_active_branch", "comment_on_issue", "list_files_in_bot_branch"}
+)
+
 def _normalize_github_tool_names(tools: list[Any]) -> list[Any]:
     """Normalize GitHub toolkit names for OpenAI-compatible function calling."""
     for tool in tools:
@@ -78,8 +112,21 @@ class GitHubClient:
 
     @property
     def tools(self) -> list[Any]:
-        """Return GitHub tools with OpenAI-compatible function names."""
+        """Return all GitHub tools with OpenAI-compatible function names."""
         return self._tools
+
+    def _tools_by_mode(self, modes: frozenset[str]) -> list[Any]:
+        return [tool for tool in self._tools if getattr(tool, "mode", None) in modes]
+
+    @property
+    def orchestrator_tools(self) -> list[Any]:
+        """Read-only GitHubToolkit tools safe to hand to the Orchestrator LLM."""
+        return self._tools_by_mode(ORCHESTRATOR_READ_ONLY_MODES)
+
+    @property
+    def pr_agent_tools(self) -> list[Any]:
+        """GitHubToolkit write tools reserved for the HITL-gated PR stage."""
+        return self._tools_by_mode(PR_AGENT_WRITE_MODES)
 
     @property
     def repository(self) -> Any:

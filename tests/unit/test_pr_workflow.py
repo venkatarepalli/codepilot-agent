@@ -110,8 +110,12 @@ def test_publish_creates_branch_commit_and_pull_request(
     assert len(tree_entries) == 1
     assert isinstance(tree_entries[0], InputGitTreeElement)
 
+    # A free-form "fix: ..." message is normalized to the required format.
     repository.create_git_commit.assert_called_once_with(
-        "fix: correct login validation",
+        "fix(#12): correct login validation\n\n"
+        "- Change: correct login validation (src/login.py)\n"
+        "- Why: Resolve issue #12: Fix login validation\n"
+        "- Closes #12",
         repository.create_git_tree.return_value,
         [repository.get_git_commit.return_value],
     )

@@ -112,6 +112,24 @@ ORCHESTRATOR_SUBAGENTS: list[dict[str, str]] = [
 ]
 
 
+#: Backend/context-engineering configuration for the root agent.
+ORCHESTRATOR_BACKEND_CONFIG: dict[str, Any] = {
+    "backend": "StateBackend",
+    "summarization": True,
+}
+
+
+def _require_deepagents_summarization() -> None:
+    """Fail fast if the installed DeepAgents no longer auto-adds summarization."""
+    import deepagents.graph as deepagents_graph
+
+    if not hasattr(deepagents_graph, "create_summarization_middleware"):
+        raise RuntimeError(
+            "summarization=True is configured, but the installed deepagents "
+            "version does not provide SummarizationMiddleware."
+        )
+
+
 class CodePilotOrchestrator:
     """Coordinate issue classification, context assembly, and task execution."""
 
@@ -192,6 +210,16 @@ class CodePilotOrchestrator:
         factory = agent_factory or create_deep_agent
         self._agent_factory = factory
         self._model = model
+
+        # Component 2 requirement: auto-summarization must be enabled.
+        # DeepAgents 0.7 has no ``summarization=`` kwarg on create_deep_agent();
+        # it always installs SummarizationMiddleware on the root agent and on
+        # every subagent. Passing ``summarization=True`` would raise TypeError,
+        # so the setting lives here and is verified against the installed
+        # library (see tests/unit/test_orchestrator_summarization.py).
+        self.summarization = ORCHESTRATOR_BACKEND_CONFIG["summarization"]
+        if self.summarization and agent_factory is None:
+            _require_deepagents_summarization()
 
         self._agent = factory(
             model=model,
