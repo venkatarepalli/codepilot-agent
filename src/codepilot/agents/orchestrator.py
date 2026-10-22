@@ -11,6 +11,7 @@ import logging
 from deepagents.backends import StateBackend
 from deepagents import create_deep_agent
 from langchain.agents.middleware import TodoListMiddleware
+from langgraph.pregel import Pregel
 
 from codepilot.agents.classifier import classify_issue
 from codepilot.agents.coder import CoderAgent
@@ -136,6 +137,84 @@ ORCHESTRATOR_BACKEND_CONFIG: dict[str, Any] = {
     "backend": "StateBackend",
     "summarization": True,
 }
+
+
+def _short(value: Any, limit: int = 90) -> str:
+    text = " ".join(str(value).split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _describe_tool_call(call: Mapping[str, Any]) -> str:
+    name = call.get("name", "?")
+    args = call.get("args") or {}
+    if name == "task":
+        return (
+            f"task → {args.get('subagent_type', '?')}: "
+            f"{_short(args.get('description', ''), 70)}"
+        )
+    if name == "write_todos":
+        todos = args.get("todos") or []
+        return f"write_todos ({len(todos)} item(s))"
+    shown = ", ".join(f"{key}={_short(value, 40)}" for key, value in list(args.items())[:2])
+    return f"{name}({shown})"
+
+
+def stream_agent_with_logging(agent: Any, state: Mapping[str, Any]) -> Any:
+    """Run a compiled DeepAgents graph via ``.stream()``, logging tool calls live.
+
+    Uses ``stream_mode="values"`` with ``subgraphs=True`` so the root agent's
+    and each subagent's tool calls and results appear in Agent Logs as they
+    happen. The final root state is returned, identical to ``invoke()``.
+    Non-graph agents (for example test doubles) fall back to ``invoke()``.
+    """
+    if not isinstance(agent, Pregel):
+        return agent.invoke(state)
+
+    final_state: Any = None
+    seen: set[str] = set()
+    pending_subagents: list[str] = []
+    namespace_labels: dict[tuple[str, ...], str] = {}
+
+    for namespace, chunk in agent.stream(state, stream_mode="values", subgraphs=True):
+        namespace = tuple(namespace)
+        if not namespace:
+            final_state = chunk
+            label = "Orchestrator"
+        else:
+            if namespace not in namespace_labels:
+                namespace_labels[namespace] = (
+                    pending_subagents.pop(0) if pending_subagents else "subagent"
+                )
+            label = namespace_labels[namespace]
+
+        messages = chunk.get("messages", []) if isinstance(chunk, Mapping) else []
+        for message in messages:
+            key = f"{namespace}:{getattr(message, 'id', None) or id(message)}"
+            if key in seen:
+                continue
+            seen.add(key)
+            message_type = getattr(message, "type", "")
+            if message_type == "ai":
+                for call in getattr(message, "tool_calls", None) or []:
+                    if not namespace and call.get("name") == "task":
+                        pending_subagents.append(
+                            str((call.get("args") or {}).get("subagent_type", "subagent"))
+                        )
+                    logger.info("[%s] tool call: %s", label, _describe_tool_call(call))
+                content = getattr(message, "content", "")
+                if content and not getattr(message, "tool_calls", None):
+                    logger.info("[%s] response: %s", label, _short(content, 120))
+            elif message_type == "tool":
+                logger.info(
+                    "[%s] tool result (%s): %s",
+                    label,
+                    getattr(message, "name", "?"),
+                    _short(getattr(message, "content", ""), 100),
+                )
+
+    if final_state is None:
+        raise RuntimeError("Streaming produced no final agent state.")
+    return final_state
 
 
 def _require_deepagents_summarization() -> None:
@@ -946,7 +1025,7 @@ class CodePilotOrchestrator:
             "files": self._initial_virtual_files(task.get("context")),
         }
 
-        root_response = self._agent.invoke(initial_state)
+        root_response = stream_agent_with_logging(self._agent, initial_state)
 
         handoff: str | None = None
         max_root_attempts = 3
@@ -1001,7 +1080,8 @@ class CodePilotOrchestrator:
                     "all required specialist calls and results are present."
                 )
 
-                root_response = self._agent.invoke(
+                root_response = stream_agent_with_logging(
+                    self._agent,
                     {
                         "messages": [
                             *messages,
@@ -1010,7 +1090,7 @@ class CodePilotOrchestrator:
                                 "content": continuation_prompt,
                             },
                         ]
-                    }
+                    },
                 )
 
         if handoff is None:
