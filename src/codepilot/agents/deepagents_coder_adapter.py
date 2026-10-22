@@ -6,8 +6,9 @@ import json
 import logging
 import random
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from codepilot.github.models import GitHubIssue
@@ -35,12 +36,24 @@ class DeepAgentsCoderAdapter:
         workspace: CoderWorkspace,
         *,
         task_context: str = "",
+        priority_paths: Sequence[str] = (),
     ) -> None:
         if not isinstance(task_context, str):
             raise TypeError("task_context must be a string.")
         self._agent = agent
         self._workspace = workspace
         self._task_context = task_context.strip()
+        # Relevant files chosen by the Repo Map retrieval (Component 2). They are
+        # loaded first so the bounded context always contains the files that
+        # matter, instead of whatever sorts first alphabetically.
+        self._priority_paths: tuple[str, ...] = tuple(
+            dict.fromkeys(
+                PurePosixPath(path.replace("\\", "/")).as_posix()
+                for path in priority_paths
+                if isinstance(path, str) and path.strip()
+            )
+        )
+        self._logged_context_selection = False
 
     def _with_task_context(self, prompt: str) -> str:
         """Append Orchestrator context as explicitly untrusted user-level data."""
@@ -163,7 +176,16 @@ class DeepAgentsCoderAdapter:
         sensitive_parts = {".env", ".secret", ".pem", ".key"}
         files: dict[str, str] = {}
         total_chars = 0
-        candidates = sorted(workspace.path.rglob("*"), key=lambda path: path.as_posix())
+        priority_rank = {path: rank for rank, path in enumerate(self._priority_paths)}
+
+        def order(path: Path) -> tuple[int, int, str]:
+            relative_posix = path.relative_to(workspace.path).as_posix()
+            rank = priority_rank.get(relative_posix)
+            if rank is not None:
+                return (0, rank, relative_posix)
+            return (1, 0, relative_posix)
+
+        candidates = sorted(workspace.path.rglob("*"), key=order)
         for path in candidates:
             if not path.is_file() or path.is_symlink():
                 continue
@@ -188,6 +210,17 @@ class DeepAgentsCoderAdapter:
             total_chars += len(section)
             if len(files) >= self.MAX_CONTEXT_FILES:
                 break
+
+        if not self._logged_context_selection:
+            self._logged_context_selection = True
+            relevant = [path for path in files if path in priority_rank]
+            logger.info(
+                "Coder context: %d relevant file(s) from Repo Map retrieval loaded first %s; "
+                "%d file(s) in total.",
+                len(relevant),
+                relevant,
+                len(files),
+            )
         return files
 
     @staticmethod

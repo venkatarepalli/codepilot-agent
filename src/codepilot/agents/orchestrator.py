@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from datetime import datetime, timezone
+import logging
 
 from deepagents.backends import StateBackend
 from deepagents import create_deep_agent
@@ -112,6 +113,24 @@ ORCHESTRATOR_SUBAGENTS: list[dict[str, str]] = [
 ]
 
 
+#: Component 2: the Orchestrator chooses the retrieval strategy per task type.
+#: Keyword matching over file summaries is fast and precise for docs/config
+#: work where file names and summaries carry the signal. Code changes use
+#: hybrid (keyword + ChromaDB embeddings over file-content chunks).
+RETRIEVAL_STRATEGY_BY_CATEGORY: dict[str, str] = {
+    "documentation": "keyword",
+    "config_change": "keyword",
+    "dependency_update": "keyword",
+    "bug_fix": "hybrid",
+    "feature_addition": "hybrid",
+}
+
+
+def choose_retrieval_strategy(category: Any) -> str:
+    """Return the retrieval strategy the Orchestrator uses for an issue category."""
+    return RETRIEVAL_STRATEGY_BY_CATEGORY.get(getattr(category, "value", category), "hybrid")
+
+
 #: Backend/context-engineering configuration for the root agent.
 ORCHESTRATOR_BACKEND_CONFIG: dict[str, Any] = {
     "backend": "StateBackend",
@@ -128,6 +147,9 @@ def _require_deepagents_summarization() -> None:
             "summarization=True is configured, but the installed deepagents "
             "version does not provide SummarizationMiddleware."
         )
+
+
+logger = logging.getLogger(__name__)
 
 
 class CodePilotOrchestrator:
@@ -273,6 +295,15 @@ class CodePilotOrchestrator:
         if self._context_assembler is None or self._repo_map_provider is None:
             return None
 
+        category = classify_issue(issue)
+        strategy = choose_retrieval_strategy(category)
+        logger.info(
+            "Retrieval strategy for issue #%s (%s): %s.",
+            issue.number,
+            category.value,
+            strategy,
+        )
+
         if repository_root is None:
             # Preserve compatibility for existing callers and tests.
             repo_map = self._repo_map_provider()
@@ -284,6 +315,7 @@ class CodePilotOrchestrator:
             repo_map,
             issue.title,
             issue.body or "",
+            retrieval_strategy=strategy,
         )
 
     @staticmethod
@@ -655,6 +687,13 @@ class CodePilotOrchestrator:
             episodic=episodic_context,
             semantic=semantic_context,
         )
+        logger.info(
+            "Memory for issue #%s: %d past lesson(s) from semantic memory, "
+            "%d recent task(s) from episodic memory.",
+            issue.number,
+            len(semantic_context),
+            len(episodic_context),
+        )
 
         return {
             "issue": issue,
@@ -955,10 +994,15 @@ class CodePilotOrchestrator:
             system_prompt=coding_system_prompt,
             name="codepilot_coder",
         )
+        context_package = task.get("context")
+        relevant_paths = (
+            [file.path for file in context_package.files] if context_package is not None else []
+        )
         adapter = DeepAgentsCoderAdapter(
             coding_agent,
             self._coder_workspace,
             task_context=task_context,
+            priority_paths=relevant_paths,
         )
         coder = CoderAgent(
             self._coder_workspace,

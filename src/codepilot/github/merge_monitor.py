@@ -112,5 +112,10 @@ class PullRequestMergeMonitor:
             with self._lock:
                 self._pending.pop(pull_number, None)
             outcomes[pull_number] = "recorded"
+            logger.info(
+                "Semantic memory: recorded lesson from merged PR #%s (issue #%s).",
+                pull_number,
+                task.issue.number,
+            )
 
         return outcomes

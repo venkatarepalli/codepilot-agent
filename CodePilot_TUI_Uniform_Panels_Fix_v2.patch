@@ -1,0 +1,59 @@
+--- a/src/codepilot/tui/app.py
++++ b/src/codepilot/tui/app.py
+@@ -167,7 +167,7 @@
+         height: 1fr; layout: grid; grid-size: 2 2;
+         grid-columns: 1fr 1fr; grid-rows: 1fr 1fr;
+     }
+-    .panel { border: round $primary; padding: 0 1; height: 1fr; background: $background; }
++    .panel { border: round $primary; padding: 0 1; height: 100%; background: $background; }
+     .panel-title { text-style: bold; color: $accent; height: 1; }
+     #issues-panel { column-span: 1; }
+     #task-panel { column-span: 1; }
+@@ -260,25 +260,34 @@
+         self.call_after_refresh(self._balance_dashboard_rows)
+ 
+     def on_resize(self, event: Resize) -> None:
+-        """Keep the dashboard's two rows equal when the terminal is resized."""
+-        if self._dashboard_container is not None:
++        """Recalculate equal dashboard rows after a terminal resize."""
++        dashboard = self._dashboard_container
++        if dashboard is not None:
++            # Re-enable flexible tracks before measuring the new available height.
++            dashboard.styles.grid_rows = "1fr 1fr"
+             self.call_after_refresh(self._balance_dashboard_rows)
+ 
+     def _balance_dashboard_rows(self) -> None:
+-        """Reserve a bottom margin when the grid's available height is odd."""
++        """Use two equal integer-height grid rows, leaving any spare row unused."""
+         dashboard = self._dashboard_container
+         if dashboard is None:
+             return
+-        margin = dashboard.styles.margin
+-        unreserved_height = dashboard.size.height + margin.bottom
+-        desired_bottom_margin = unreserved_height % 2
+-        if margin.bottom != desired_bottom_margin:
+-            dashboard.styles.margin = (
+-                margin.top,
+-                margin.right,
+-                desired_bottom_margin,
+-                margin.left,
+-            )
++
++        panel_ids = (
++            "#issues-panel",
++            "#task-panel",
++            "#logs-panel",
++            "#approval-panel",
++        )
++        heights = [self.query_one(panel_id, Vertical).size.height for panel_id in panel_ids]
++        if not heights or any(height <= 0 for height in heights):
++            return
++
++        # Grid tracks use whole terminal cells. If fractional tracks split unevenly,
++        # use their smaller rendered height for both rows instead of accepting a
++        # one-cell discrepancy between the top and bottom panels.
++        row_height = min(heights)
++        dashboard.styles.grid_rows = f"{row_height} {row_height}"
+ 
+     def update_issues(self, issues: Sequence[Mapping[str, Any]]) -> None:
+         """Replace the issue panel with the latest polling snapshot."""

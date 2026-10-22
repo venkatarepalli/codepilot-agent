@@ -138,14 +138,24 @@ class ContextAssembler:
         repo_map: RepoMap,
         issue_title: str,
         issue_description: str = "",
+        *,
+        retrieval_strategy: str | None = None,
     ) -> ContextPackage:
-        """Build context using repo map, keyword matches, and optional semantics."""
+        """Build context using repo map, keyword matches, and optional semantics.
+
+        ``retrieval_strategy`` lets the caller (the Orchestrator) choose
+        ``keyword``, ``semantic`` or ``hybrid`` per task; ``None`` uses the
+        assembler's configured default.
+        """
+        strategy = retrieval_strategy or self.retrieval_strategy
+        if strategy not in {"keyword", "semantic", "hybrid"}:
+            raise ValueError("retrieval_strategy must be 'keyword', 'semantic', or 'hybrid'")
         repo_map_text = self._render_repo_map(repo_map)
         repo_map_cost = _estimate_tokens(repo_map_text)
         selected: dict[str, ContextFile] = {}
         truncated = repo_map_cost > self.token_budget
 
-        if self.retrieval_strategy in {"keyword", "hybrid"}:
+        if strategy in {"keyword", "hybrid"}:
             keyword_results = retrieve_relevant_files(
                 repo_map,
                 issue_title,
@@ -160,7 +170,7 @@ class ContextAssembler:
                         ContextFile(path, summary, "keyword", score, distance),
                     )
 
-        if self.retrieval_strategy in {"semantic", "hybrid"}:
+        if strategy in {"semantic", "hybrid"}:
             semantic_results: Iterable[Any] = ()
 
             if self.semantic_retriever is not None:

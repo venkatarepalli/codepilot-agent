@@ -1,0 +1,52 @@
+$ErrorActionPreference = "Stop"
+
+$root = (Get-Location).Path
+$zip = Join-Path (Split-Path $root -Parent) "codepilot-agent-handover.zip"
+$temp = Join-Path $env:TEMP "codepilot-handover"
+
+if (Test-Path $temp) { Remove-Item $temp -Recurse -Force }
+if (Test-Path $zip)  { Remove-Item $zip -Force }
+
+New-Item -ItemType Directory -Path $temp | Out-Null
+
+$exclude = @(
+    ".git", ".venv", "venv", "__pycache__", ".pytest_cache",
+    ".ruff_cache", ".mypy_cache", "node_modules", "dist", "build",
+    ".codepilot"
+)
+
+Get-ChildItem -Path $root -Recurse -File -Force |
+Where-Object {
+    $file = $_
+    $rel = $file.FullName.Substring($root.Length).TrimStart('\')
+    $parts = $rel -split '[\\/]'
+
+    $skipDir = $false
+    foreach ($part in $parts) {
+        if ($exclude -contains $part) {
+            $skipDir = $true
+            break
+        }
+    }
+
+    $skipFile = $file.Name -eq ".env" -or
+                $file.Name -like ".env.*" -or
+                $file.Extension -in @(".pem", ".key", ".p12", ".pfx", ".secret")
+
+    (-not $skipDir) -and (-not $skipFile)
+} |
+ForEach-Object {
+    $rel = $_.FullName.Substring($root.Length).TrimStart('\')
+    $dest = Join-Path $temp $rel
+
+    New-Item -ItemType Directory -Path (Split-Path $dest -Parent) -Force |
+        Out-Null
+
+    Copy-Item $_.FullName $dest
+}
+
+Compress-Archive -Path "$temp\*" -DestinationPath $zip -CompressionLevel Optimal
+
+Write-Host "`nZIP created successfully:" -ForegroundColor Green
+Write-Host $zip
+Get-Item $zip | Select-Object FullName, Length

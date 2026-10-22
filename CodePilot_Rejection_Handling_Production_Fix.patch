@@ -1,0 +1,56 @@
+diff --git a/src/codepilot/github/pr_workflow.py b/src/codepilot/github/pr_workflow.py
+--- a/src/codepilot/github/pr_workflow.py
++++ b/src/codepilot/github/pr_workflow.py
+@@ -14,9 +14,13 @@
+ ApprovalCallback = Callable[[str, Mapping[str, Any]], bool]
+ 
+ 
+ class PullRequestWorkflowError(RuntimeError):
+     """Raised when a pull-request workflow cannot safely continue."""
+ 
+ 
++class HumanApprovalRejectedError(PullRequestWorkflowError):
++    """Raised when a required human approval is explicitly rejected."""
++
++
+ @dataclass(frozen=True, slots=True)
+ class PullRequestResult:
+@@ -82,7 +86,7 @@
+                 f"Approval callback failed for {operation}: {type(exc).__name__}: {exc}"
+             ) from exc
+         if approved is not True:
+-            raise PullRequestWorkflowError(f"Human approval was not granted for: {operation}.")
++            raise HumanApprovalRejectedError(f"Human approval was not granted for: {operation}.")
+ 
+     def publish(
+         self,
+diff --git a/src/codepilot/runner.py b/src/codepilot/runner.py
+--- a/src/codepilot/runner.py
++++ b/src/codepilot/runner.py
+@@ -26,6 +26,6 @@
+ from codepilot.github.client import GitHubClient
+ from codepilot.github.models import GitHubIssue
+ from codepilot.github.polling import GitHubPollingService
+-from codepilot.github.pr_workflow import PullRequestWorkflow
++from codepilot.github.pr_workflow import HumanApprovalRejectedError, PullRequestWorkflow
+ 
+ logger = logging.getLogger("codepilot.runner")
+@@ -413,9 +413,18 @@
+                 with self._state_lock:
+                     self._issue_statuses[issue.number] = "INTERRUPTED"
+                 self._update_task(title, "FAILED", agent="Runtime")
+                 logger.warning("Interrupted while processing issue #%s.", issue.number)
+                 raise
++            except HumanApprovalRejectedError as exc:
++                with self._state_lock:
++                    self._issue_statuses[issue.number] = "REJECTED"
++                self._update_task(title, "REJECTED", agent="PR Agent")
++                self._log(
++                    f"Publication rejected for issue #{issue.number}: {exc}",
++                    source="Human Approval",
++                )
++                logger.info("Publication rejected for issue #%s.", issue.number)
+             except Exception as exc:
+                 with self._state_lock:
+                     self._issue_statuses[issue.number] = "FAILED"
+                 self._update_task(title, "FAILED", agent="Runtime")

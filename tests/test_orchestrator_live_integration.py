@@ -254,7 +254,9 @@ def test_live_coding_path_uses_prepared_task_and_root_handoff(
     assert prepared_task["prompt"] in task_context
     assert "src/calculator.py" in task_context
     assert "Handoff:" in task_context
-    adapter_type.assert_called_once_with(coding_agent, workspace, task_context=task_context)
+    adapter_type.assert_called_once_with(
+        coding_agent, workspace, task_context=task_context, priority_paths=[]
+    )
     coder_type.return_value.run.assert_called_once_with(issue, str(tmp_path))
 
 
@@ -283,3 +285,36 @@ def test_live_coding_path_fails_closed_without_real_delegation(
 
     assert root_agent.invoke.call_count == 3
     assert factory.call_count == 1  # no separate coding agent is created after failed delegation
+
+
+def test_coder_receives_repo_map_relevant_paths_as_priority(
+    issue: GitHubIssue, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    root_agent = MagicMock()
+    root_agent.invoke.return_value = _delegated_response()
+    orchestrator = _make_orchestrator(
+        root_agent=root_agent,
+        coding_agent=MagicMock(),
+        workspace=Mock(),
+        agent_factory=MagicMock(),
+    )
+    context = SimpleNamespace(
+        files=[SimpleNamespace(path="src/calculator.py"), SimpleNamespace(path="tests/t.py")],
+        repo_map_text="",
+    )
+    orchestrator.prepare_task = Mock(  # type: ignore[method-assign]
+        return_value={"prompt": "task", "category": "bug_fix", "context": context}
+    )
+
+    with (
+        patch("codepilot.agents.orchestrator.DeepAgentsCoderAdapter") as adapter_type,
+        patch("codepilot.agents.orchestrator.CoderAgent"),
+    ):
+        orchestrator.run_coding_task(issue, str(tmp_path))
+
+    assert adapter_type.call_args.kwargs["priority_paths"] == [
+        "src/calculator.py",
+        "tests/t.py",
+    ]

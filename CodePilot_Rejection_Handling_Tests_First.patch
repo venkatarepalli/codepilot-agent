@@ -1,0 +1,62 @@
+diff --git a/tests/unit/test_runner.py b/tests/unit/test_runner.py
+--- a/tests/unit/test_runner.py
++++ b/tests/unit/test_runner.py
+@@ -319,4 +319,58 @@
+     assert not checkout_paths[0].exists(), (
+         "temporary checkout should be cleaned up after publication"
+     )
+     polling.release_issue.assert_called_once_with(issue.number)
++
++
++def test_rejected_publication_is_reported_as_rejected_not_failed(
++    monkeypatch, caplog
++):
++    """A deliberate human rejection is not logged as an unexpected failure."""
++    settings = make_settings()
++    client = MagicMock()
++    orchestrator = MagicMock()
++    orchestrator.merge_monitor = None
++    orchestrator.run_coding_task.return_value = SimpleNamespace(
++        status=runner.CoderStatus.SUCCEEDED,
++        attempts=1,
++        plan="Update the calculation.",
++        test_result=SimpleNamespace(succeeded=True, return_code=0),
++        diff_path=None,
++        error=None,
++    )
++    polling = MagicMock()
++
++    monkeypatch.setattr(runner, "GitHubClient", lambda _settings: client)
++    monkeypatch.setattr(runner, "create_orchestrator", lambda **_kwargs: orchestrator)
++    monkeypatch.setattr(
++        runner, "GitHubPollingService", lambda *_args, **_kwargs: polling
++    )
++
++    def clone_repository(_settings, destination):
++        destination.mkdir(parents=True)
++
++    monkeypatch.setattr(runner, "_clone_repository", clone_repository)
++    runtime = runner.CodePilotRuntime(settings)
++
++    def reject_publication(*_args, **_kwargs):
++        runtime.pr_workflow._require_approval(
++            lambda *_approval_args: False,
++            "publish_branch",
++            {"issue_number": 42},
++        )
++
++    orchestrator.publish_coder_result.side_effect = reject_publication
++    issue = SimpleNamespace(
++        number=42,
++        title="Fix calculator",
++        reporter=None,
++        url="https://github.com/example/repository/issues/42",
++    )
++
++    runtime.process_issue(issue)
++
++    assert runtime._issue_statuses[issue.number] == "REJECTED"
++    assert "Publication rejected for issue #42" in caplog.text
++    assert "Coding workflow failed for issue #42" not in caplog.text
++    assert not any(record.exc_info for record in caplog.records)
++    polling.release_issue.assert_called_once_with(issue.number)

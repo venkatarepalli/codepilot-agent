@@ -32,8 +32,16 @@ def create_orchestrator(
     repository: str | None = None,
     pr_workflow: PullRequestWorkflow | None = None,
     approval_callback: Callable[[str, Mapping[str, Any]], bool] | None = None,
+    repo_map_token_budget: int = 4000,
+    repo_map_top_k: int = 10,
 ) -> CodePilotOrchestrator:
-    """Create and configure the CodePilot orchestrator and its dependencies."""
+    """Create and configure the CodePilot orchestrator and its dependencies.
+
+    ``repo_map_token_budget`` and ``repo_map_top_k`` come from
+    CODEPILOT_REPO_MAP_TOKEN_BUDGET / CODEPILOT_REPO_MAP_TOP_K (defaults 4000 / 10).
+    """
+    if repo_map_token_budget < 1 or repo_map_top_k < 1:
+        raise ValueError("repo_map_token_budget and repo_map_top_k must be positive.")
     model = create_chat_model()
 
     resolved_workspace_root = (
@@ -67,8 +75,7 @@ def create_orchestrator(
     )
 
     # Context engineering: Repo Map, keyword retrieval, and semantic retrieval.
-    repo_map_token_budget = 4000
-    repo_map_top_k = 10
+    # Budget and top-K are configurable (see Settings); no hard-coded values here.
 
     repo_map_cache = RepoMapCache(cache_directory=memory_root / "repo_map_cache")
 

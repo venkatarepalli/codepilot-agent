@@ -21,6 +21,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from codepilot.agents.classifier import classify_issue
 from codepilot.agents.coder_models import CoderStatus
 from codepilot.agents.orchestrator import CodePilotOrchestrator
 from codepilot.config.bootstrap import create_orchestrator
@@ -39,6 +40,7 @@ from codepilot.sandbox.execution_models import CommandStatus
 from codepilot.sandbox.executor import SandboxExecutor
 from codepilot.sandbox.models import SecurityDecision
 from codepilot.sandbox.policy import SandboxPolicy
+from codepilot.skills.skill_registry import get_skill
 
 logger = logging.getLogger("codepilot.runner")
 
@@ -119,6 +121,14 @@ def _request_approval(operation: str, details: Mapping[str, Any]) -> bool:
         print("Approval not granted.")
         return False
     return answer == "yes"
+
+
+def _skill_name_for(issue: Any) -> str:
+    """Return the skill the Orchestrator selects for this issue (display only)."""
+    try:
+        return get_skill(classify_issue(issue)).name
+    except Exception:
+        return "—"
 
 
 class GuardrailBlockedError(RuntimeError):
@@ -328,6 +338,8 @@ class CodePilotRuntime:
         self._latest_open_issues: tuple[GitHubIssue, ...] = ()
         self._latest_claimed_issue_numbers: frozenset[int] = frozenset()
         self._direct_task_number = self.DIRECT_TASK_ID_START
+        # Skill selected for the task currently shown in the Active Task panel.
+        self._current_skill = "—"
         self._started = False
 
         self.client = GitHubClient(settings)
@@ -352,6 +364,8 @@ class CodePilotRuntime:
             pr_workflow=self.pr_workflow,
             repository=(f"{settings.github_repository_owner}/{settings.github_repository_name}"),
             approval_callback=self._approval_callback,
+            repo_map_token_budget=settings.repo_map_token_budget,
+            repo_map_top_k=settings.repo_map_top_k,
         )
 
         polling_options: dict[str, Any] = {
@@ -397,11 +411,12 @@ class CodePilotRuntime:
         status: str,
         *,
         agent: str = "Orchestrator",
-        skill: str = "—",
+        skill: str | None = None,
     ) -> None:
+        resolved_skill = skill if skill is not None else self._current_skill
         self._post_ui(
             "update_active_task",
-            {"title": title, "status": status, "agent": agent, "skill": skill},
+            {"title": title, "status": status, "agent": agent, "skill": resolved_skill},
         )
 
     def _request_approval(self, operation: str, details: Mapping[str, Any]) -> bool:
@@ -486,6 +501,7 @@ class CodePilotRuntime:
 
         with self._task_lock:
             title = f"Issue #{issue.number}: {issue.title}"
+            self._current_skill = _skill_name_for(issue)
             self._update_task(title, "TRIAGED", agent="Orchestrator")
             self._log(f"Starting coding workflow for issue #{issue.number}: {issue.title}")
 
@@ -767,6 +783,7 @@ class CodePilotRuntime:
                 body=task,
             )
             title = f"Direct task: {task}"
+            self._current_skill = _skill_name_for(issue)
             self._update_task(title, "EXPLORING", agent="Repo Explorer")
             self._log("Starting a direct task against the configured repository.", source="TUI")
             try:

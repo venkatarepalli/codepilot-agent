@@ -141,7 +141,15 @@ def test_context_is_built_using_issue_title_and_description(
 
     orchestrator.prepare_task(issue)
 
-    assembler.assemble.assert_called_once_with(repo_map, issue.title, issue.body)
+    from codepilot.agents.classifier import classify_issue
+    from codepilot.agents.orchestrator import choose_retrieval_strategy
+
+    assembler.assemble.assert_called_once_with(
+        repo_map,
+        issue.title,
+        issue.body,
+        retrieval_strategy=choose_retrieval_strategy(classify_issue(issue)),
+    )
 
 
 def test_context_configuration_must_be_provided_as_a_pair() -> None:
