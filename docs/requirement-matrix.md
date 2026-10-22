@@ -1,6 +1,6 @@
 # CodePilot Requirement Matrix
 
-The status reflects **both** the unit/integration tests (offline) and the live runs against `venkatarepalli/codepilot-smoke-test`, recorded in `docs/assets/`.
+The status reflects **both** the unit/integration tests (offline) and the live runs against `venkatarepalli/codepilot-smoke-test`, shown in the demo video and the PRs it created (#7, #9 and the demo PR).
 
 | ID | Requirement | Implementation | Tests | Live evidence |
 |---|---|---|---|---|
@@ -12,13 +12,13 @@ The status reflects **both** the unit/integration tests (offline) and the live r
 | CP-006 | Files on demand via `read_file`; paths only in delegation; Repo Map in VFS | `_initial_virtual_files` | `test_vfs_seeding.py`, `test_coder_context_relevance.py` | `[repo_explorer] tool call: read_file(/src/calculator.py)` returns real content |
 | CP-007 | Auto-summarization | DeepAgents `SummarizationMiddleware` (D-3) | `test_orchestrator_summarization.py` | n/a |
 | CP-008 | Sandboxed Coder (copy, permissions, block-lists) | `sandbox/*`, `agents/coder.py` (S-1) | `test_sandbox_*.py`, `test_coder_workspace.py`, `test_coder_agent.py` | "Tests: PASSED" in the workspace before publishing |
-| CP-009 | Retry ≤3, HITL after 2 failed test runs, diff preview | `agents/coder.py` | `test_coder_agent_test_integration.py` | `demo-run-1.log`: "2 failed test runs; requesting human approval" |
+| CP-009 | Retry ≤3, HITL after 2 failed test runs, diff preview | `agents/coder.py` | `test_coder_agent_test_integration.py` | Live: "2 failed test runs; requesting human approval" (retry prompt) |
 | CP-010 | Working, episodic (session summary, last 3, skip recent failures) and semantic memory | `memory/*`, `github/merge_monitor.py` | `test_working_memory.py`, `test_episodic_memory*.py`, `test_session_summary.py`, `test_semantic_memory.py`, `test_merge_monitor*.py`, `test_memory_visibility.py` | "Episodic memory: loaded 1 previous session summary(ies)"; "Memory for issue …: 1 recent task(s)" |
 | CP-011 | Guardrails: NeMo input rail, toolkit scoping, sandbox policy | `guardrails/`, `github/client.py`, `sandbox/policy.py` | `test_nemo_guardrails.py`, `test_github_toolkit_wiring.py`, `test_guardrail_*.py` | Issue #6 BLOCKED [prompt_injection]; direct task BLOCKED [destructive_shell] |
 | CP-012 | HITL gates: PR to main/master, more than 5 files, `git push`, retry after 2 failures | `pr_workflow.py`, `policy.py`, `coder.py` | `test_pr_workflow.py`, `test_sandbox_policy.py`, `test_coder_agent_test_integration.py` | `publish_branch` + `create_pull_request_against_protected_branch` approvals |
 | CP-013 | PR conventions: branch, `fix(#n)` commit, `[CodePilot]` title, body, labels, reviewer | `pr_workflow.py`, `github/client.py` | `test_pr_conventions.py`, `test_pr_workflow.py`, `test_github_client_reviewer_regression.py` | PR #7, PR #9 |
 | CP-014 | Merge conflict → FAILED + TUI notice, never auto-resolved | `MergeConflictError` | `test_merge_conflict_detection.py` | No false conflict on PR #9 |
-| CP-015 | TUI: 4 panels, live issues, streaming logs, approve/reject/inspect, `[i]` direct task | `tui/app.py`, `runner.py` | `test_tui_app.py`, `test_runner.py`, `test_agent_streaming.py` | Screenshots, `direct-task-success.log` |
+| CP-015 | TUI: 4 panels, live issues, streaming logs, approve/reject/inspect, `[i]` direct task | `tui/app.py`, `runner.py` | `test_tui_app.py`, `test_runner.py`, `test_agent_streaming.py` | Demo video (direct task success + block) |
 
 ## Verification commands
 

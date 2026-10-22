@@ -58,10 +58,14 @@ fix(#5): Fix typo in README installation section
 - Closes #5
 ```
 
-### Evidence from live runs (`docs/assets/`)
+### Evidence from live runs
 
-..\.codepilot-agent-codepilot-workspaces\issue-<number>\working\proposed_diff.txt
----
+- **Pull requests created by CodePilot:** [#7](https://github.com/venkatarepalli/codepilot-smoke-test/pull/7), [#9](https://github.com/venkatarepalli/codepilot-smoke-test/pull/9), and the demo PR for issue #10 (shown in the video).
+- **Demo video:** the full run with live agent tool calls, both approvals, guardrail blocks, and session memory reloaded on restart.
+- **Diff previews:** every run writes its proposed diff to
+  `..\.codepilot-agent-codepilot-workspaces\issue-<number>\working\proposed_diff.txt`
+  (next to the checkout; direct tasks use internal numbers starting at 2000000000).
+- **Session memory:** stored in `.codepilot/memory/sessions.jsonl` (git-ignored).
 
 ## What CodePilot does
 

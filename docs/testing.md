@@ -15,6 +15,6 @@ python scripts/smoke_test_coder.py   # optional live-model check (costs API usag
   - the real NeMo Guardrails engine
 - **Integration tests** (`tests/test_orchestrator_live_integration.py`, `test_runner*.py`): the delegation contract, recovery attempts, runner ↔ orchestrator ↔ PR workflow wiring.
 - **Isolation:** `tests/conftest.py` redirects episodic session summaries to a temporary directory, so tests never touch real project state.
-- **Live end-to-end runs** against `venkatarepalli/codepilot-smoke-test` are recorded in `docs/assets/` (see the README's Demo section).
+- **Live end-to-end runs** against `venkatarepalli/codepilot-smoke-test` are shown in the demo video (see the README's Demo section).
 
 On Windows, one symlink test is skipped unless Developer Mode is enabled.

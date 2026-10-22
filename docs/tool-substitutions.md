@@ -16,7 +16,7 @@ Every place where CodePilot departs from the letter of the assignment is recorde
 | **Trade-offs** | The Coder gets test feedback once per attempt rather than iterating interactively with `execute`. Isolation is directory-plus-policy, not OS-level. The **whole** repository is copied rather than a subset, because a partial copy breaks imports in the test suite. |
 | **Impact** | Every Component 3 guarantee holds: isolated copy, no writes outside the sandbox, the required command and file block-lists, max 3 retries, the HITL gate after 2 failed test runs, and the diff preview at `working/proposed_diff.txt`. |
 | **Note on "Coder requests a blocked operation"** | By design the Coder has no shell, so it cannot request one. The only executed commands are the configured test command and the `[g]` check-only preview, which shows both guardrail layers and never executes anything. |
-| **Evidence** | `test_sandbox_policy.py`, `test_sandbox_executor.py`, `test_sandbox_workspace.py`, `test_coder_workspace.py`, `test_coder_agent*.py`, `test_adapter_task_context_security.py`; live logs in `docs/assets/`. |
+| **Evidence** | `test_sandbox_policy.py`, `test_sandbox_executor.py`, `test_sandbox_workspace.py`, `test_coder_workspace.py`, `test_coder_agent*.py`, `test_adapter_task_context_security.py`; live runs in the demo video. |
 
 ---
 
