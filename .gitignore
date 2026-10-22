@@ -62,3 +62,7 @@ coverage.xml
 *.mp4
 *.mov
 *.webm
+
+# Handover artefacts
+*.patch
+create-handover-zip.ps1*
