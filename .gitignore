@@ -35,8 +35,8 @@ Thumbs.db
 
 # Local CodePilot state
 .codepilot/
-working/
-sandbox/
+/working/
+/sandbox/
 
 # Databases / vector stores
 *.db
