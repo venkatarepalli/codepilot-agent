@@ -40,7 +40,7 @@ The video shows GitHub issue polling, a full issue → pull-request run with liv
 |---|---|---|
 | [codepilot-smoke-test#7](https://github.com/venkatarepalli/codepilot-smoke-test/pull/7) | #5 Fix typo in README installation section | `documentation_skill`, tests passed on attempt 1, two approvals |
 | [codepilot-smoke-test#9](https://github.com/venkatarepalli/codepilot-smoke-test/pull/9) | #8 Add a Usage section to the README | Live tool-call streaming, keyword retrieval, merge-conflict check passed |
-| <ADD DEMO PR LINK> | #10 (recorded in the video) | End-to-end run shown in the demo |
+| https://github.com/venkatarepalli/codepilot-smoke-test/pull/11 | #10 (recorded in the video) | End-to-end run shown in the demo |
 
 Every PR follows the same conventions, all enforced in code:
 
