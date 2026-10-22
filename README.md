@@ -67,6 +67,8 @@ fix(#5): Fix typo in README installation section
   (next to the checkout; direct tasks use internal numbers starting at 2000000000).
 - **Session memory:** stored in `.codepilot/memory/sessions.jsonl` (git-ignored).
 
+---
+
 ## What CodePilot does
 
 - **Polls GitHub** every N minutes for open issues labelled `ai-assignable`, or unassigned issues below a complexity threshold. It skips issues already being processed, issues that already have an open CodePilot PR, and issues that failed in a recent session.
@@ -150,7 +152,7 @@ More detail:
 
 ## How one issue flows through the system
 
-These are the actual Agent Logs lines you will see (from `docs/assets/`):
+These are the actual Agent Logs lines you will see:
 
 ```
 [Memory] Episodic memory: loaded 1 previous session summary(ies); recently failed issues that will be skipped: none.
@@ -358,7 +360,7 @@ Every layer fails closed. Details are in [`docs/guardrails.md`](docs/guardrails.
    - edits to `.env`, `*.pem`, `*.key`, `*.secret` and `*credentials*`
    - attempts to bypass approval or force-push
 
-   It runs a deterministic Colang flow and Python action, so it makes no LLM calls and gives the same result every time. If NeMo is unavailable, the same rules run in Python.
+   It runs a deterministic Colang flow and Python action, so it makes no LLM calls and gives the same result every time. It covers common paraphrases too ("disregard the guidance you were given", "act as an unrestricted assistant", `rm -r -f`), and the tests also check that legitimate look-alikes stay allowed. If NeMo is unavailable, the same rules run in Python.
 2. **Read-only GitHub tools for the LLM.** The Orchestrator gets only the toolkit's read tools (`Get Issues`, `Get Issue`, `Read File`, `Search code`, …). `Delete File`, `Create/Update File`, `Create Pull Request` and `Set active branch` are never bound to any model.
 3. **Sandbox policy** (`sandbox/policy.py`). It blocks:
    - `rm -rf`, `curl`, `wget` and `pip install`
@@ -400,6 +402,8 @@ The full write-ups, with reasons, alternatives and trade-offs, are in [`docs/too
 - **Custom Skills registry.** Skills are a structured Python registry rather than DeepAgents `skills` SKILL.md files.
 - **Two LLM providers.** OpenAI and Google Gemini only.
 - **Self-review.** When the GitHub token belongs to the issue reporter, the reviewer request is skipped (GitHub forbids self-review); a warning is logged.
+- **Pattern-based input rail.** The NeMo rail matches known attack patterns and their common paraphrases; it isn't a semantic classifier, so a novel wording can get through. That's why it is only the first layer: the Coder has no shell, secret files never enter any agent's context, every command passes the sandbox policy, and publication needs human approval.
+- **LLM scope drift on vague tasks.** The Coder may occasionally change more than asked (seen once in testing: a vague docstring request produced a new test file). The diff preview and the `changed_files` list in the approval prompt are the safeguard; precise task wording prevents it.
 
 ---
 
@@ -438,7 +442,7 @@ src/codepilot/
   graph/lifecycle.py         # task state machine
   tui/app.py                 # Textual 4-panel interface
 tests/                       # offline unit and integration tests
-docs/                        # design docs, requirement matrix, evidence logs (docs/assets)
+docs/                        # design docs, requirement matrix, demo script
 ```
 
 ## License

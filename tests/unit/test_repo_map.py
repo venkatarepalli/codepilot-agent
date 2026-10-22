@@ -183,6 +183,7 @@ def test_cache_directory_nested_in_repository_is_excluded(
     assert [item.path for item in repo_map.files] == ["app.py"]
     assert "artifacts/" not in repo_map.directory_tree
 
+
 def test_cache_invalidates_after_git_tracked_file_changes(
     tmp_path: Path,
 ) -> None:
@@ -220,6 +221,7 @@ def test_cache_invalidates_after_git_tracked_file_changes(
 
     assert first != second
     assert "new_function" in second.files[0].summary
+
 
 def test_cache_rebuilds_when_tracked_file_has_uncommitted_changes(
     tmp_path: Path,

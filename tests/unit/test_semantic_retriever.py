@@ -211,6 +211,7 @@ def test_from_persistent_directory_reports_missing_chromadb_clearly(
             embedding_function=object(),
         )
 
+
 def test_index_source_files_splits_large_file_into_chunks(tmp_path: Path) -> None:
     """Source indexing stores large files as multiple searchable chunks."""
     source_dir = tmp_path / "src"
@@ -300,10 +301,10 @@ def test_index_source_files_removes_stale_chunks_only_for_current_repository(
     assert "summary-record" in collection.documents
     assert "other-repo-chunk" in collection.documents
     assert any(
-        metadata.get("path") == "src/current.py"
-        and metadata.get("document_type") == "source_chunk"
+        metadata.get("path") == "src/current.py" and metadata.get("document_type") == "source_chunk"
         for metadata in collection.metadatas.values()
     )
+
 
 def test_index_source_files_preserves_chunks_for_unreadable_files(
     tmp_path: Path,
@@ -365,37 +366,41 @@ def test_index_source_files_preserves_chunks_for_unreadable_files(
 
     # The readable file must still be indexed.
     assert any(
-        metadata.get("path") == "src/current.py"
-        and metadata.get("document_type") == "source_chunk"
+        metadata.get("path") == "src/current.py" and metadata.get("document_type") == "source_chunk"
         for metadata in collection.metadatas.values()
     )
+
 
 def test_retrieve_deduplicates_files_returned_by_multiple_chunks() -> None:
     """Multiple matching chunks from one file produce one file result."""
     collection = FakeCollection()
     collection.query_response = {
-        "ids": [[
-            "app-chunk-1",
-            "app-chunk-2",
-            "utils-chunk-1",
-        ]],
-        "metadatas": [[
-            {
-                "path": "src/app.py",
-                "language": "Python",
-                "summary": "Application module",
-            },
-            {
-                "path": "src/app.py",
-                "language": "Python",
-                "summary": "Application module",
-            },
-            {
-                "path": "src/utils.py",
-                "language": "Python",
-                "summary": "Utility module",
-            },
-        ]],
+        "ids": [
+            [
+                "app-chunk-1",
+                "app-chunk-2",
+                "utils-chunk-1",
+            ]
+        ],
+        "metadatas": [
+            [
+                {
+                    "path": "src/app.py",
+                    "language": "Python",
+                    "summary": "Application module",
+                },
+                {
+                    "path": "src/app.py",
+                    "language": "Python",
+                    "summary": "Application module",
+                },
+                {
+                    "path": "src/utils.py",
+                    "language": "Python",
+                    "summary": "Utility module",
+                },
+            ]
+        ],
         "distances": [[0.1, 0.2, 0.3]],
     }
 
@@ -408,6 +413,7 @@ def test_retrieve_deduplicates_files_returned_by_multiple_chunks() -> None:
     result_paths = [result.file.path for result in results]
 
     assert result_paths == ["src/app.py", "src/utils.py"]
+
 
 def test_index_source_files_includes_files_missing_from_repo_map(
     tmp_path: Path,

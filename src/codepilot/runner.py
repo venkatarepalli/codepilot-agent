@@ -396,9 +396,7 @@ class CodePilotRuntime:
         self.recent_session_summaries = load_recent_summaries(
             memory_directory, repository=repository_name
         )
-        self.recently_failed_issues = recently_failed_issue_numbers(
-            self.recent_session_summaries
-        )
+        self.recently_failed_issues = recently_failed_issue_numbers(self.recent_session_summaries)
 
         polling_options: dict[str, Any] = {
             "merge_monitor": self.orchestrator.merge_monitor,

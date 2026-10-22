@@ -293,6 +293,7 @@ def test_is_pull_request_merged_returns_merge_status(
     client.repository.get_pull.assert_called_once_with(42)
     pull_request.is_merged.assert_called_once_with()
 
+
 def test_normalize_github_tool_names_preserves_tools_and_normalizes_names():
     """GitHub tool names must satisfy OpenAI function-calling requirements."""
     import re

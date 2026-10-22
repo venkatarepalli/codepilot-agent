@@ -51,6 +51,7 @@ BLOCKED_TOOLKIT_MODES: frozenset[str] = frozenset(
     {"delete_file", "set_active_branch", "comment_on_issue", "list_files_in_bot_branch"}
 )
 
+
 def _normalize_github_tool_names(tools: list[Any]) -> list[Any]:
     """Normalize GitHub toolkit names for OpenAI-compatible function calling."""
     for tool in tools:

@@ -98,6 +98,7 @@ def test_semantic_failure_falls_back_to_keyword_results():
     assert package.files
     assert any(item.source.startswith("keyword") for item in package.files)
 
+
 def test_keyword_strategy_does_not_call_semantic_retriever():
     semantic = FakeSemanticRetriever(
         [FakeResult(FileSummary("src/semantic.py", "Python", "Semantic result."))]
@@ -149,6 +150,7 @@ def test_hybrid_strategy_merges_keyword_and_semantic_results():
 def test_rejects_unknown_retrieval_strategy():
     with pytest.raises(ValueError, match="retrieval_strategy"):
         ContextAssembler(retrieval_strategy="unknown")
+
 
 def test_context_budget_truncates_additional_summaries():
     package = ContextAssembler(token_budget=30).assemble(make_repo_map(), "GitHub issue polling")

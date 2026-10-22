@@ -122,16 +122,13 @@ class ContextAssembler:
         if keyword_top_k < 1 or semantic_top_k < 1:
             raise ValueError("retrieval top_k values must be at least 1")
         if retrieval_strategy not in {"keyword", "semantic", "hybrid"}:
-            raise ValueError(
-                "retrieval_strategy must be 'keyword', 'semantic', or 'hybrid'"
-            )
+            raise ValueError("retrieval_strategy must be 'keyword', 'semantic', or 'hybrid'")
 
         self.token_budget = token_budget
         self.semantic_retriever = semantic_retriever
         self.keyword_top_k = keyword_top_k
         self.semantic_top_k = semantic_top_k
         self.retrieval_strategy = retrieval_strategy
-
 
     def assemble(
         self,

@@ -223,6 +223,7 @@ def _git_revision(root: Path) -> str | None:
         return None
     return result.stdout.strip() or None
 
+
 def _git_changed_files(root: Path) -> set[str] | None:
     """Return changed tracked paths relative to HEAD, or None if unavailable."""
     try:
@@ -244,11 +245,7 @@ def _git_changed_files(root: Path) -> set[str] | None:
     except (OSError, subprocess.SubprocessError):
         return None
 
-    return {
-        Path(line).as_posix()
-        for line in result.stdout.splitlines()
-        if line.strip()
-    }
+    return {Path(line).as_posix() for line in result.stdout.splitlines() if line.strip()}
 
 
 def _fit_token_budget(repo_map: RepoMap, token_budget: int) -> RepoMap:

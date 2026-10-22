@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -60,14 +59,26 @@ def _embedding_document(file_summary: FileSummary) -> str:
         f"Summary: {file_summary.summary}"
     )
 
+
 DEFAULT_CHUNK_SIZE = 1200
 DEFAULT_CHUNK_OVERLAP = 200
 
 SOURCE_EXTENSIONS = {
-    ".py", ".js", ".jsx", ".ts", ".tsx",
-    ".java", ".sql", ".html", ".css",
-    ".json", ".yaml", ".yml", ".toml",
-    ".sh", ".ps1",
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".java",
+    ".sql",
+    ".html",
+    ".css",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".sh",
+    ".ps1",
 }
 
 
@@ -103,6 +114,7 @@ def _chunk_text(
         start = end - overlap
 
     return chunks
+
 
 class SemanticFileRetriever:
     """Index Repo Map summaries in a persistent ChromaDB collection.
@@ -192,9 +204,7 @@ class SemanticFileRetriever:
         """Index safe source-file chunks in the persistent vector collection."""
         root = Path(repository_root).resolve()
         if not root.is_dir():
-            raise NotADirectoryError(
-                f"Repository path is not a directory: {root}"
-            )
+            raise NotADirectoryError(f"Repository path is not a directory: {root}")
 
         # Discover source files independently of the token-budgeted Repo Map.
         # The Repo Map supplies summaries; it does not limit source indexing.
@@ -228,11 +238,7 @@ class SemanticFileRetriever:
                 continue
 
             file_summary = next(
-                (
-                    item
-                    for item in repo_map.files
-                    if item.path == relative_path
-                ),
+                (item for item in repo_map.files if item.path == relative_path),
                 None,
             )
             language = file_summary.language if file_summary else "Other"
@@ -240,7 +246,7 @@ class SemanticFileRetriever:
 
             for chunk_index, chunk in enumerate(_chunk_text(content)):
                 chunk_id = hashlib.sha256(
-                    f"{root}:{relative_path}:{chunk_index}".encode("utf-8")
+                    f"{root}:{relative_path}:{chunk_index}".encode()
                 ).hexdigest()
 
                 ids.append(chunk_id)
@@ -283,10 +289,7 @@ class SemanticFileRetriever:
             if not metadata or metadata.get("repository") != str(root):
                 continue
 
-            if (
-                existing_id not in desired_ids
-                and metadata.get("path") not in unreadable_paths
-            ):
+            if existing_id not in desired_ids and metadata.get("path") not in unreadable_paths:
                 stale_ids.append(existing_id)
 
         if stale_ids:
@@ -301,7 +304,6 @@ class SemanticFileRetriever:
             metadatas=metadatas,
         )
         return len(ids)
-
 
     def retrieve(
         self,

@@ -45,7 +45,7 @@ def is_structured_commit_message(message: str, issue_number: int) -> bool:
         return False
     header, blank, *body = lines
     expected_prefix = f"fix(#{issue_number}): "
-    if not header.startswith(expected_prefix) or not header[len(expected_prefix):].strip():
+    if not header.startswith(expected_prefix) or not header[len(expected_prefix) :].strip():
         return False
     if len(header) > COMMIT_HEADER_MAX_LENGTH or blank.strip():
         return False
@@ -69,12 +69,7 @@ def build_structured_commit_message(
     one_line = one_line[: COMMIT_HEADER_MAX_LENGTH - len(prefix)].rstrip()
     what = " ".join(what_changed.split()) or one_line
     reason = " ".join(why.split()) or "Address the reported issue."
-    return (
-        f"{prefix}{one_line}\n\n"
-        f"- Change: {what}\n"
-        f"- Why: {reason}\n"
-        f"- Closes #{issue_number}"
-    )
+    return f"{prefix}{one_line}\n\n- Change: {what}\n- Why: {reason}\n- Closes #{issue_number}"
 
 
 def enforce_structured_commit_message(
