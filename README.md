@@ -30,7 +30,7 @@ CodePilot is a terminal-based AI coding agent built with **DeepAgents** (LangCha
 
 ## Demo
 
-**Demo video:** <ADD YOUR VIDEO LINK HERE>
+**Demo video:** https://www.youtube.com/watch?v=IH6mX3CtGNk
 
 The video shows GitHub issue polling, a full issue → pull-request run with live agent tool calls, both human-approval prompts, a guardrail blocking a prompt-injection issue, a blocked destructive command, and session memory being reloaded on restart.
 
@@ -60,14 +60,7 @@ fix(#5): Fix typo in README installation section
 
 ### Evidence from live runs (`docs/assets/`)
 
-| Log | Shows |
-|---|---|
-| `demo-run-1.log` | The HITL gate after 2 failed test runs (the repo's own failing test on `main`), and the NeMo rail blocking issue #6 before any LLM call |
-| `demo-run-2-pr7.log` | Issue #5 → PR #7. Duplicate-PR guard skipping issues that already have open CodePilot PRs; reviewer skipped safely when the reporter is the PR author |
-| `demo-run-3-pr9.log` | Issue #8 → PR #9 with live root and subagent tool calls |
-| `direct-task-success.log` | A direct TUI task: virtual filesystem seeded, Repo Explorer reading files on demand, sandbox tests passing, no PR (by design) |
-| `direct-task-blocked.log` | A direct task containing `rm -rf /`, blocked by NeMo before reaching the LLM |
-
+..\.codepilot-agent-codepilot-workspaces\issue-<number>\working\proposed_diff.txt
 ---
 
 ## What CodePilot does
