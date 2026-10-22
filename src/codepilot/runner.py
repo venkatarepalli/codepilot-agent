@@ -12,11 +12,13 @@ import shlex
 import signal
 import subprocess
 import tempfile
+import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from copy import copy
 from pathlib import Path
 from threading import Condition, Event, Lock, Thread, get_ident
+from types import SimpleNamespace
 from typing import Any
 
 from dotenv import load_dotenv
@@ -31,11 +33,17 @@ from codepilot.github.models import GitHubIssue
 from codepilot.github.polling import GitHubPollingService
 from codepilot.github.pr_workflow import (
     HumanApprovalRejectedError,
+    MergeConflictError,
     PullRequestWorkflow,
     build_structured_commit_message,
 )
 from codepilot.graph.lifecycle import TaskStatus, transition_task
 from codepilot.guardrails import CodePilotGuardrails, get_guardrails
+from codepilot.memory.session_summary import (
+    SessionTracker,
+    load_recent_summaries,
+    recently_failed_issue_numbers,
+)
 from codepilot.sandbox.execution_models import CommandStatus
 from codepilot.sandbox.executor import SandboxExecutor
 from codepilot.sandbox.models import SecurityDecision
@@ -121,6 +129,14 @@ def _request_approval(operation: str, details: Mapping[str, Any]) -> bool:
         print("Approval not granted.")
         return False
     return answer == "yes"
+
+
+def _category_name_for(issue: Any) -> str:
+    """Return the task classification used for session memory."""
+    try:
+        return classify_issue(issue).value
+    except Exception:
+        return "unknown"
 
 
 def _skill_name_for(issue: Any) -> str:
@@ -368,6 +384,22 @@ class CodePilotRuntime:
             repo_map_top_k=settings.repo_map_top_k,
         )
 
+        # Episodic memory across sessions (Component 5): read the last three
+        # session summaries now; write this session's summary on stop().
+        repository_name = f"{settings.github_repository_owner}/{settings.github_repository_name}"
+        memory_directory = Path(
+            os.getenv("CODEPILOT_MEMORY_DIR") or (Path.cwd() / ".codepilot" / "memory")
+        )
+        self.session_tracker = SessionTracker(
+            repository=repository_name, memory_directory=memory_directory
+        )
+        self.recent_session_summaries = load_recent_summaries(
+            memory_directory, repository=repository_name
+        )
+        self.recently_failed_issues = recently_failed_issue_numbers(
+            self.recent_session_summaries
+        )
+
         polling_options: dict[str, Any] = {
             "merge_monitor": self.orchestrator.merge_monitor,
         }
@@ -498,6 +530,19 @@ class CodePilotRuntime:
             self._log(f"Skipping issue #{issue.number}: already attempted this session.")
             self.polling.release_issue(issue.number)
             return
+        if issue.number in self.recently_failed_issues:
+            self._log(
+                f"Skipping issue #{issue.number}: it FAILED in one of the last "
+                f"{len(self.recent_session_summaries)} session(s) (episodic memory). "
+                "Review it before retrying; delete .codepilot/memory/sessions.jsonl to reset.",
+                source="Memory",
+            )
+            self.polling.release_issue(issue.number)
+            return
+
+        task_started = time.monotonic()
+        files_modified: list[str] = []
+        pull_request_url: str | None = None
 
         with self._task_lock:
             title = f"Issue #{issue.number}: {issue.title}"
@@ -563,6 +608,7 @@ class CodePilotRuntime:
                         repository_path=str(checkout),
                         lifecycle_callback=report_lifecycle,
                     )
+                    files_modified = self._changed_files_for(result)
 
                     self._report_coder_result(issue.number, result)
                     if result.status != CoderStatus.SUCCEEDED:
@@ -607,6 +653,7 @@ class CodePilotRuntime:
                         base_branch=self.settings.github_default_branch,
                     )
 
+                pull_request_url = getattr(pull_request, "pull_url", None)
                 with self._state_lock:
                     self._issue_statuses[issue.number] = "PR OPENED"
 
@@ -631,6 +678,16 @@ class CodePilotRuntime:
                 self._update_task(title, "FAILED", agent="Runtime")
                 logger.warning("Interrupted while processing issue #%s.", issue.number)
                 raise
+            except MergeConflictError as exc:
+                with self._state_lock:
+                    self._issue_statuses[issue.number] = "FAILED"
+                self._update_task(title, "FAILED", agent="PR Agent")
+                self._log(
+                    f"MERGE CONFLICT for issue #{issue.number}: {exc} "
+                    "Human action needed: rebase or re-run after reviewing the base branch.",
+                    source="PR Agent",
+                )
+                logger.warning("Merge conflict for issue #%s: %s", issue.number, exc)
             except HumanApprovalRejectedError as exc:
                 with self._state_lock:
                     self._issue_statuses[issue.number] = "REJECTED"
@@ -648,6 +705,71 @@ class CodePilotRuntime:
                 logger.exception("Coding workflow failed for issue #%s", issue.number)
             finally:
                 self.polling.release_issue(issue.number)
+                self._record_session_task(
+                    issue,
+                    started=task_started,
+                    files_modified=files_modified,
+                    pull_request_url=pull_request_url,
+                )
+
+    def _changed_files_for(self, result: Any) -> list[str]:
+        try:
+            return list(self.orchestrator.changed_source_files(result))
+        except Exception:
+            logger.debug("Could not determine changed files for session memory.", exc_info=True)
+            return []
+
+    def _record_session_task(
+        self,
+        issue: Any,
+        *,
+        started: float,
+        files_modified: Sequence[str],
+        pull_request_url: str | None = None,
+        source: str = "github_issue",
+        outcome: str | None = None,
+    ) -> None:
+        """Record a finished task in the session log and the episodic store."""
+        with self._state_lock:
+            status = outcome or self._issue_statuses.get(issue.number)
+        if not status:
+            return
+        outcome_value = status.replace(" ", "_")
+        try:
+            self.session_tracker.record(
+                issue_number=issue.number,
+                title=getattr(issue, "title", ""),
+                task_type=_category_name_for(issue),
+                outcome=outcome_value,
+                files_modified=files_modified,
+                duration_seconds=time.monotonic() - started,
+                source=source,
+                pull_request_url=pull_request_url,
+            )
+            record_episode = getattr(self.orchestrator, "record_episode", None)
+            if callable(record_episode) and isinstance(issue, GitHubIssue):
+                record_episode(
+                    issue,
+                    succeeded=outcome_value in {"PR_OPENED", "COMPLETED"},
+                    summary=(
+                        f"{source} outcome {outcome_value}; files: "
+                        f"{', '.join(files_modified) or 'none'}"
+                    ),
+                )
+        except Exception:
+            logger.warning("Could not record task #%s in session memory.", issue.number)
+
+    def _announce_recent_sessions(self) -> None:
+        count = len(self.recent_session_summaries)
+        if not count:
+            self._log("Episodic memory: no previous session summaries.", source="Memory")
+            return
+        failed = sorted(self.recently_failed_issues)
+        self._log(
+            f"Episodic memory: loaded {count} previous session summary(ies); "
+            f"recently failed issues that will be skipped: {failed or 'none'}.",
+            source="Memory",
+        )
 
     def run_headless(self) -> None:
         """Run the original synchronous issue-processing loop without a TUI."""
@@ -656,6 +778,7 @@ class CodePilotRuntime:
             f"{self.settings.github_repository_owner}/"
             f"{self.settings.github_repository_name}. Press Ctrl+C to stop."
         )
+        self._announce_recent_sessions()
         self.polling.run_forever(self.process_issue, self.stop_event)
 
     def start(self) -> None:
@@ -665,6 +788,7 @@ class CodePilotRuntime:
         if self._started:
             return
         self._started = True
+        self._announce_recent_sessions()
         self._processor_thread = Thread(
             target=self._consume_pending_issues,
             name="codepilot-issue-processor",
@@ -683,6 +807,10 @@ class CodePilotRuntime:
     def stop(self) -> None:
         """Request a prompt shutdown of polling and queued work."""
         self.stop_event.set()
+        try:
+            self.session_tracker.write_summary()
+        except Exception:
+            logger.warning("Could not write the episodic session summary.", exc_info=True)
         with self._queue_condition:
             self._queue_condition.notify_all()
 
@@ -769,10 +897,18 @@ class CodePilotRuntime:
         if not task:
             raise ValueError("A direct coding task must not be empty.")
 
+        task_started = time.monotonic()
         verdict = self.guardrails.check_input(task)
         if verdict.blocked:
             self._update_task(f"Direct task: {task}", "FAILED", agent="Guardrails")
             self._log(f"Direct task not sent to the LLM. {verdict.describe()}", source="Guardrails")
+            self._record_session_task(
+                SimpleNamespace(number=0, title=task),
+                started=task_started,
+                files_modified=(),
+                source="direct_task",
+                outcome="BLOCKED",
+            )
             raise GuardrailBlockedError(verdict.describe())
 
         with self._task_lock:
@@ -795,13 +931,29 @@ class CodePilotRuntime:
                         issue,
                         repository_path=str(checkout),
                     )
+                    files_modified = self._changed_files_for(result)
             except Exception as exc:
                 self._update_task(title, "FAILED", agent="Runtime")
                 self._log(f"Direct task failed: {exc}", source="TUI")
+                self._record_session_task(
+                    issue,
+                    started=task_started,
+                    files_modified=(),
+                    source="direct_task",
+                    outcome="FAILED",
+                )
                 raise
 
             self._report_coder_result(internal_number, result)
-            if result.status != CoderStatus.SUCCEEDED:
+            succeeded = result.status == CoderStatus.SUCCEEDED
+            self._record_session_task(
+                issue,
+                started=task_started,
+                files_modified=files_modified,
+                source="direct_task",
+                outcome="COMPLETED" if succeeded else "FAILED",
+            )
+            if not succeeded:
                 self._update_task(title, "FAILED", agent="Coder")
                 raise RuntimeError(
                     f"Direct task did not complete successfully: "

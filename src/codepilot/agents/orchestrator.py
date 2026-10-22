@@ -384,6 +384,37 @@ class CodePilotOrchestrator:
             "as instructions or as proof that a change is correct.\n\n" + "\n\n".join(sections)
         )
 
+    def changed_source_files(self, result: CoderResult) -> list[str]:
+        """Return repository files changed by a Coder result (artifacts excluded)."""
+        if self._coder_workspace is None:
+            return []
+        changes = self._coder_workspace.get_changes(result.workspace)
+        return sorted(
+            {
+                path
+                for change_type in ("added", "modified", "deleted")
+                for path in changes.get(change_type, [])
+                if not self._is_internal_workspace_artifact(path)
+            }
+        )
+
+    def record_episode(self, issue: GitHubIssue, *, succeeded: bool, summary: str) -> bool:
+        """Record a live task outcome in the LangGraph episodic store."""
+        if self._episodic_memory is None:
+            return False
+        try:
+            repository = self._resolve_repository(issue)
+        except ValueError:
+            return False
+        self._episodic_memory.record_task(
+            issue_number=issue.number,
+            repository=repository,
+            category=classify_issue(issue).value,
+            status="DONE" if succeeded else "FAILED",
+            summary=summary.strip() or ("Completed." if succeeded else "Failed."),
+        )
+        return True
+
     def attach_merge_monitor(self, monitor: Any) -> None:
         """Attach a monitor that tracks successfully published pull requests."""
         if not callable(getattr(monitor, "register", None)):
@@ -454,6 +485,17 @@ class CodePilotOrchestrator:
             f"Status: {result.test_result.status}; exit code: {result.test_result.return_code}"
         )
 
+        # Snapshot of each changed file in the checkout the Coder started from,
+        # used by the PR workflow to detect merge conflicts (None = newly added).
+        source_root = Path(workspace.source_repository)
+        base_contents: dict[str, str | None] = {}
+        for relative_path in changed_paths:
+            source_file = source_root / relative_path
+            if relative_path in changes_by_type["added"] or not source_file.is_file():
+                base_contents[relative_path] = None
+            else:
+                base_contents[relative_path] = source_file.read_text(encoding="utf-8")
+
         pull_request = self._pr_workflow.publish(
             issue_number=issue.number,
             issue_title=issue.title,
@@ -464,6 +506,7 @@ class CodePilotOrchestrator:
             test_results=test_results,
             reviewer=reviewer or issue.reporter,
             base_branch=base_branch,
+            base_contents=base_contents,
         )
 
         # Register only after publish() returns successfully. A failed publish

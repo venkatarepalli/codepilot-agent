@@ -169,7 +169,7 @@ def test_publish_coder_result_excludes_internal_workspace_artifacts(
     result = CoderResult(
         status=CoderStatus.SUCCEEDED,
         issue_number=issue.number,
-        workspace=Mock(),
+        workspace=Mock(source_repository=tmp_path),
         plan="Correct the multiplication operator.",
         attempts=1,
         test_result=CommandExecutionResult(

@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from github import InputGitTreeElement
+from github import GithubException, InputGitTreeElement
 
 from codepilot.github.client import GitHubClient
 
@@ -119,6 +119,28 @@ class HumanApprovalRejectedError(PullRequestWorkflowError):
     """Raised when a required human approval is explicitly rejected."""
 
 
+class MergeConflictError(PullRequestWorkflowError):
+    """Raised when the base branch changed a file CodePilot also changed.
+
+    CodePilot never resolves conflicts automatically: the task is marked FAILED
+    and the human is notified in the TUI.
+    """
+
+    def __init__(self, paths: list[str], base_branch: str) -> None:
+        self.paths = tuple(paths)
+        self.base_branch = base_branch
+        super().__init__(
+            f"Merge conflict: {', '.join(paths)} changed on '{base_branch}' since "
+            "CodePilot cloned the repository. Not resolved automatically; "
+            "no branch, commit, or pull request was created."
+        )
+
+
+def _normalize_text(value: str) -> str:
+    # Windows checkouts may use CRLF while GitHub stores LF; that is not a conflict.
+    return value.replace("\r\n", "\n")
+
+
 @dataclass(frozen=True, slots=True)
 class PullRequestResult:
     """Summary of a published CodePilot pull request."""
@@ -186,6 +208,53 @@ class PullRequestWorkflow:
         if approved is not True:
             raise HumanApprovalRejectedError(f"Human approval was not granted for: {operation}.")
 
+    def _raise_on_conflict(
+        self,
+        base: str,
+        changes: Mapping[str, str],
+        base_contents: Mapping[str, str | None],
+    ) -> None:
+        """Detect base-branch edits to files CodePilot changed (read-only API calls)."""
+        normalized_base = {
+            path.replace("\\", "/").strip(): content for path, content in base_contents.items()
+        }
+        repository = self._github_client.repository
+        try:
+            head_sha = repository.get_git_ref(f"heads/{base}").object.sha
+        except Exception as exc:
+            raise PullRequestWorkflowError(
+                f"Could not read base branch '{base}' to check for conflicts: {exc}"
+            ) from exc
+
+        conflicts: list[str] = []
+        for path in sorted(changes):
+            expected = normalized_base.get(path)
+            try:
+                current_file = repository.get_contents(path, ref=head_sha)
+                if isinstance(current_file, list):
+                    current: str | None = "<directory>"
+                else:
+                    current = current_file.decoded_content.decode("utf-8")
+            except GithubException as exc:
+                if getattr(exc, "status", None) == 404:
+                    current = None
+                else:
+                    raise PullRequestWorkflowError(
+                        f"Could not verify '{path}' on '{base}' for conflicts: {exc}"
+                    ) from exc
+            except UnicodeDecodeError:
+                current = "<binary>"
+
+            if (current is None) != (expected is None) or (
+                current is not None
+                and expected is not None
+                and _normalize_text(current) != _normalize_text(expected)
+            ):
+                conflicts.append(path)
+
+        if conflicts:
+            raise MergeConflictError(conflicts, base)
+
     def publish(
         self,
         *,
@@ -198,6 +267,7 @@ class PullRequestWorkflow:
         test_results: str,
         reviewer: str | None = None,
         base_branch: str | None = None,
+        base_contents: Mapping[str, str | None] | None = None,
     ) -> PullRequestResult:
         """Publish proposed text-file changes and create a pull request.
 
@@ -212,6 +282,10 @@ class PullRequestWorkflow:
             test_results: Test results to include in the pull-request body.
             reviewer: Optional GitHub username to request as reviewer.
             base_branch: Target branch; defaults to the configured branch.
+            base_contents: Content of each changed path in the checkout the
+                Coder started from (``None`` for files it added). When given,
+                the current base branch is compared first; any difference
+                raises MergeConflictError before approvals or remote writes.
 
         Returns:
             Details of the created pull request.
@@ -288,6 +362,9 @@ class PullRequestWorkflow:
             # human can verify scope instead of trusting a count alone.
             "changed_files": changed_files,
         }
+
+        if base_contents is not None:
+            self._raise_on_conflict(base, normalized_changes, base_contents)
 
         # A larger change set must be explicitly reviewed before publication.
         if len(normalized_changes) > 5:
