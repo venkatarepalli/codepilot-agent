@@ -172,6 +172,14 @@ def stream_agent_with_logging(agent: Any, state: Mapping[str, Any]) -> Any:
 
     final_state: Any = None
     seen: set[str] = set()
+    # Messages passed in (e.g. history on a recovery attempt) were already
+    # logged; skip them so they are not replayed or used to label subagents.
+    for message in state.get("messages", []) if isinstance(state, Mapping) else []:
+        message_id = (
+            message.get("id") if isinstance(message, Mapping) else getattr(message, "id", None)
+        )
+        if message_id:
+            seen.add(f"():{message_id}")
     pending_subagents: list[str] = []
     namespace_labels: dict[tuple[str, ...], str] = {}
 
@@ -261,21 +269,68 @@ class CodePilotOrchestrator:
             for part in normalized.split("/")
         )
 
-    @staticmethod
-    def _initial_virtual_files(context_package: ContextPackage | None) -> dict:
-        """Prepare bounded repository context for the DeepAgents filesystem."""
+    #: Bounds for files seeded into the agents' virtual filesystem.
+    VFS_MAX_FILES = 12
+    VFS_MAX_FILE_CHARS = 12_000
+    VFS_MAX_TOTAL_CHARS = 40_000
+    _VFS_SENSITIVE_NAMES = (".env", ".pem", ".key", ".secret", "credentials", "id_rsa")
+
+    @classmethod
+    def _initial_virtual_files(
+        cls,
+        context_package: ContextPackage | None,
+        repository_root: str | Path | None = None,
+    ) -> dict:
+        """Prepare bounded repository context for the DeepAgents filesystem.
+
+        Seeds ``/repo-map.md`` plus the Repo Map's relevant files (paths chosen
+        by keyword/embedding retrieval) so the Repo Explorer and Planner can
+        load them on demand with ``read_file`` instead of receiving file
+        contents in their prompts. Sensitive files are never seeded.
+        """
         if context_package is None or not context_package.repo_map_text:
             return {}
 
         now = datetime.now(timezone.utc).isoformat()
 
-        return {
-            "/repo-map.md": {
-                "content": context_package.repo_map_text.splitlines(),
-                "created_at": now,
-                "modified_at": now,
-            }
-        }
+        def entry(text: str) -> dict:
+            return {"content": text.splitlines(), "created_at": now, "modified_at": now}
+
+        files = {"/repo-map.md": entry(context_package.repo_map_text)}
+        if repository_root is None:
+            return files
+
+        root = Path(repository_root).resolve()
+        seeded: list[str] = []
+        total = 0
+        for item in getattr(context_package, "files", ()) or ():
+            if len(seeded) >= cls.VFS_MAX_FILES:
+                break
+            relative = str(getattr(item, "path", "")).replace("\\", "/").strip("/")
+            lowered = relative.casefold()
+            if not relative or any(name in lowered for name in cls._VFS_SENSITIVE_NAMES):
+                continue
+            candidate = root / relative
+            try:
+                resolved = candidate.resolve()
+                if candidate.is_symlink() or not resolved.is_file():
+                    continue
+                resolved.relative_to(root)
+                text = resolved.read_text(encoding="utf-8")[: cls.VFS_MAX_FILE_CHARS]
+            except (OSError, ValueError, UnicodeDecodeError):
+                continue
+            if total + len(text) > cls.VFS_MAX_TOTAL_CHARS:
+                break
+            files[f"/{relative}"] = entry(text)
+            seeded.append(relative)
+            total += len(text)
+
+        logger.info(
+            "Virtual filesystem seeded: /repo-map.md + %d relevant file(s) %s.",
+            len(seeded),
+            seeded,
+        )
+        return files
 
     def __init__(
         self,
@@ -1022,7 +1077,9 @@ class CodePilotOrchestrator:
         )
         initial_state = {
             "messages": [{"role": "user", "content": orchestration_prompt}],
-            "files": self._initial_virtual_files(task.get("context")),
+            "files": self._initial_virtual_files(
+                task.get("context"), repository_root=Path(repository_path)
+            ),
         }
 
         root_response = stream_agent_with_logging(self._agent, initial_state)
@@ -1089,7 +1146,10 @@ class CodePilotOrchestrator:
                                 "role": "user",
                                 "content": continuation_prompt,
                             },
-                        ]
+                        ],
+                        # Keep the seeded repo map and relevant files available
+                        # on recovery; omitting them empties the agents' VFS.
+                        "files": initial_state["files"],
                     },
                 )
 
