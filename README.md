@@ -417,6 +417,7 @@ The full write-ups, with reasons, alternatives and trade-offs, are in [`docs/too
 | Retry-approval prompt after 2 failed runs, but the failure is in an unrelated test | The target repo's own suite is failing on `main`; fix the baseline first |
 | `MERGE CONFLICT` in Agent Logs | Someone changed the same file on the base branch; review it, then re-run |
 | `Skipped reviewer ...: that account is the pull request author` | Expected when the token owner opened the issue |
+| Headless mode takes a few minutes to stop after Ctrl+C (Windows) | Expected: it stops at the next poll (up to `CODEPILOT_POLL_INTERVAL_MINUTES`). Use the TUI (`q`) for an immediate stop |
 
 More is in [`docs/troubleshooting.md`](docs/troubleshooting.md).
 

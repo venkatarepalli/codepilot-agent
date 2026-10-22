@@ -165,10 +165,26 @@ class LogsScreen(Screen[None]):
         yield Footer()
 
     def refresh_entries(self, entries: Sequence[str]) -> None:
-        """Refresh the viewer if more runtime logs arrive while it is open."""
+        """Replace the whole viewer content (used only when history is trimmed)."""
         self._entries = list(entries)
         if self.is_mounted:
             self.query_one("#full-agent-log", TextArea).text = self.log_text
+
+    def append_entry(self, entry: str) -> None:
+        """Append one new log entry without re-rendering the whole history.
+
+        Rebuilding the full TextArea on every streamed line is O(n) per line,
+        which froze the UI for minutes on long sessions. Appending is O(1).
+        """
+        was_empty = not self._entries
+        self._entries.append(entry)
+        if not self.is_mounted:
+            return
+        text_area = self.query_one("#full-agent-log", TextArea)
+        if was_empty:
+            text_area.text = entry
+        else:
+            text_area.insert("\n" + entry, location=text_area.document.end)
 
     def action_close_logs(self) -> None:
         self.app.pop_screen()
@@ -382,7 +398,7 @@ class CodePilotApp(App[None]):
         if self._dashboard_log_widget is not None:
             self._dashboard_log_widget.write(entry)
         if isinstance(self.screen, LogsScreen):
-            self.screen.refresh_entries(self._log_entries)
+            self.screen.append_entry(entry)
 
     async def request_approval(self, operation: str, details: Mapping[str, Any]) -> bool:
         """Display an approval request and await approve/reject from the user."""
@@ -414,6 +430,13 @@ class CodePilotApp(App[None]):
             command.disabled = True
             self._pending_approval = None
             self._approval_future = None
+            # Disabling the focused input leaves nothing focused; give focus
+            # back to the dashboard so i / g / s / l / q keep responding.
+            if self._dashboard_log_widget is not None:
+                try:
+                    self._dashboard_log_widget.focus()
+                except Exception:
+                    pass
             approval_widget = self._dashboard_approval_widget or self.query_one(
                 "#approval-content", Static
             )
