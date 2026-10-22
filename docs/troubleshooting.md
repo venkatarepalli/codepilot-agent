@@ -1,16 +1,13 @@
 # Troubleshooting & Recovery
 
-**Status:** Initial skeleton.
+The common problems and fixes are listed in the README's [Troubleshooting](../README.md#troubleshooting) table.
 
-This document will contain user-facing recovery procedures for known setup/runtime problems.
+Additional recovery steps:
 
-For significant engineering investigations, see `docs/engineering-issues/`.
+- **Reset episodic memory** (e.g. to retry an issue that failed recently): delete `.codepilot/memory/sessions.jsonl`.
+- **Reset semantic lessons:** delete `.codepilot/memory/semantic/`.
+- **Reset the Repo Map cache:** delete `.codepilot/memory/repo_map_cache/`.
+- **Stale sandbox workspaces:** delete `../.<checkout-name>-codepilot-workspaces/`. They are retained after failures for inspection.
+- **NeMo Guardrails warnings at startup** (`nim_url` deprecation) are harmless.
 
-Each troubleshooting entry should include:
-
-- Symptom
-- Likely cause
-- Diagnostic command/check
-- Resolution
-- Verification
-- Recovery/reset implications
+For engineering investigations, see `docs/engineering-issues/`.
