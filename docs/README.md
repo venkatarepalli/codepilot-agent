@@ -3,7 +3,7 @@
 The documentation is organized by engineering concern rather than by implementation file.
 
 - `architecture.md` — system architecture
-- `setup.md` — detailed setup procedure (to be created during environment bootstrap)
+- `setup.md` — setup notes (the README holds the canonical setup steps)
 - `configuration.md` — configuration contract
 - `agents.md` — agent responsibilities and behavior
 - `skills.md` — Skills

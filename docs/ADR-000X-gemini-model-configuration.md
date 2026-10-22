@@ -1,6 +1,6 @@
 # ADR: Gemini model configuration
 
-- **Status:** Implemented; pending live smoke-test verification
+- **Status:** Implemented. Live demo runs used `LLM_PROVIDER=openai` (`gpt-4.1-mini`); Gemini remains a supported alternative
 - **Decision:** Construct the configured Google chat model in a dedicated model factory and inject it into the existing CodePilot Orchestrator through an application bootstrap function.
 - **Configuration:** `LLM_PROVIDER=google`, `LLM_MODEL=<model name>`, and `GOOGLE_API_KEY=<secret>` in the local `.env`.
 - **Secret handling:** `.env` must remain untracked; `.env.example` must contain no real credentials.

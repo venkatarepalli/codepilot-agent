@@ -4,6 +4,9 @@ CodePilot is a terminal-based AI coding agent built with **DeepAgents** (LangCha
 
 > Codebasics AI Engineering Bootcamp, Capstone Assignment 01 (CodePilot). CodePilot is a fictional product built for learning purposes.
 
+**Source repository:** https://github.com/venkatarepalli/codepilot-agent  
+**Test repository used in the demo:** https://github.com/venkatarepalli/codepilot-smoke-test
+
 ---
 
 ## Table of contents
@@ -223,7 +226,7 @@ The full matrix with test references is in [`docs/requirement-matrix.md`](docs/r
 ### 1. Clone and create a virtual environment
 
 ```powershell
-git clone https://github.com/<your-user>/codepilot-agent.git
+git clone https://github.com/venkatarepalli/codepilot-agent.git
 cd codepilot-agent
 py -3.13 -m venv .venv            # macOS/Linux: python3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1      # macOS/Linux: source .venv/bin/activate

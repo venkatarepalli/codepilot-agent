@@ -1,17 +1,16 @@
 # Setup Guide
 
-The README is the canonical, executable first-time and subsequent-run setup guide. Follow its **Prerequisites**, **First-Time Setup**, **Subsequent Runs**, and **Testing** sections. Avoid maintaining a second divergent command sequence here.
+The README's [Setup](../README.md#setup) section is the canonical, step-by-step setup guide: prerequisites, virtual environment, install, offline test run, test-repository preparation (labels and token permissions), `.env`, and start. This page only adds operational notes.
 
 ## State and recovery
 
-- `.env` contains local credentials and must not be committed.
-- `.codepilot/` contains local workspace and memory state. Inspect and back up retained work before deleting it.
-- The runner's issue checkout is configured outside the current project checkout to avoid recursively copying project state into the task workspace.
-- `python -m codepilot.runner` starts the four-panel Textual interface; use `python -m codepilot.runner --headless` for console mode.
-- The TUI's `i` shortcut submits a direct task to the sandboxed Coder Agent workflow. It retains a proposed diff and does not automatically open a PR without a linked GitHub issue.
-- The TUI's `s` shortcut skips the oldest queued issue; it does not force-cancel an active task. The `q` shortcut requests shutdown.
-- If a task stops because approval was denied or unavailable, inspect its test output and retained workspace before deciding whether to rerun.
+- `.env` contains local credentials and must not be committed (it is git-ignored).
+- `.codepilot/` holds local state: the Repo Map cache, ChromaDB stores and episodic session summaries (`memory/sessions.jsonl`).
+- Task workspaces are created outside the checkout (`../.<checkout>-codepilot-workspaces/`), to avoid recursively copying project state.
+- `python -m codepilot.runner` starts the four-panel Textual interface; `--headless` runs the console loop.
+- `i` submits a direct task (sandboxed, tested, no PR). `g` checks a command against both guardrail layers without running it. `s` skips the oldest queued issue. `l` opens the full log. `q` quits and writes the session summary.
+- If a task stops because an approval was rejected, inspect its retained workspace and `working/proposed_diff.txt` before re-running.
 
-## Fresh-directory verification
+## Fresh-clone verification
 
-Before submission, follow the README from a clean clone in a different directory, using a fresh virtual environment. Verify dependency installation, test/lint commands, and startup configuration without committing `.env` or local state. A live GitHub issue-to-PR check should use a disposable test repository and explicit approval.
+From a clean clone in a new directory with a fresh virtual environment: `pip install -e .`, then `python -m pytest -q` (all tests pass offline, with no keys required), then configure `.env` and run against a disposable test repository.
